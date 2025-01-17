@@ -9,17 +9,12 @@ function opt(ctrl::JSON3.Object, keysym::Symbol)
     return nothing
 end
 
-function handle_control_update(con::Connection, name::Symbol, ctrl::JSON3.Object)
-    local missing = filter(∉(keys(ctrl)), (:root, :value))
-    if !isempty(missing)
-        @warn "Bad control object, missing these keys: $missing"
-        return false
-    end
+function control_from(con::Connection, name::Symbol, ctrl::JSON3.Object)
+    local cur = get(con.controls, name, nothing)
+    local new = isnothing(cur)
     local rootpath = ctrl.root
     local update = get(ctrl, :update, con.default_update)
-    local cur = get(con.controls, name, nothing)
-    local root
-    local new = isnothing(cur)
+
     if new
         root = Var(con.env, "root?path=$rootpath")
         cur = ControlData(; name, data = ctrl, update, root)
@@ -40,44 +35,70 @@ function handle_control_update(con::Connection, name::Symbol, ctrl::JSON3.Object
             end
         end
     end
-    local val = ctrl.value
-    !(val isa JSON3.Object) && error("Bad control object named $name: $val")
-    local new_data_keys = Pair{String,Symbol}[]
-    local vars = Dict{Symbol,Var}()
-    local new_vars = []
+    return new, root, cur
+end
+
+find_ctrl_vars(::Connection, name::Symbol, ::ControlData, val) =
+    error("Bad control object named $name: $val")
+
+find_ctrl_vars(::Connection, ::Symbol, ::ControlData, ::Nothing) = Pair{String,Symbol}[]
+
+function find_ctrl_vars(con::Connection, name::Symbol, cur::ControlData, val::JSON3.Object)
+    local new_data_keys = Pair{Symbol,Symbol}[]
+    local old_vars = Set{Symbol}()
+
     for (ksym, _) in val
         local k = string(ksym)
         local m = match(VAR_NAME, k)
         isnothing(m) && error("Bad control variable in $name: $k")
         local name = Symbol(m[1])
-        local id = NO_ID
+        push!(old_vars, name)
+        push!(new_data_keys, ksym => name)
+        local metastr = something(m[2], "path=$name")
+        local meta = parsemetadata(metastr)
+        if !haskey(meta, :path)
+            meta[:path] = name
+        end
         if haskey(cur.vars, name)
-            local meta = parsemetadata(something(m[2], ""))
-            if cur.vars[name].metadata == meta
-                vars[name] = cur.vars[name]
+            local var = cur.vars[name]
+            if var.metadata == meta
                 continue
             end
-            id = cur.vars[name].id
-        elseif m[2] != ""
-            k = "$k?path=$k"
-            push!(new_vars, k => id)
+            if var.metadata[:path] != meta[:path]
+                var.path = parsepath(meta[:path])
+            end
+            var.metadata = meta
+        else
+            local var = Var(con.env, name; id = NO_ID, parent = cur.root.id)
+            var.metadata = meta
+            var.path = parsepath(meta[:path])
+            verbose(con, "MADE NEW VAR $name")
+            cur.vars[var.name] = var
         end
-        push!(new_data_keys, k => name)
     end
     for (name, var) in cur.vars
-        (haskey(cur.vars, name) || var.parent == NO_ID) && continue
+        (name ∈ old_vars || var.parent == NO_ID) &&
+            continue
         local parent = con.env.vars[var.parent]
         haskey(parent.children, name) && delete!(parent.children, name)
     end
+    return new_data_keys
+end
+
+function handle_control_update(con::Connection, name::Symbol, ctrl::JSON3.Object)
+    local missing = filter(∉(keys(ctrl)), (:root, :value))
+    if !isempty(missing)
+        @warn "Bad control object, missing these keys: $missing"
+        return false
+    end
+    local new, root, cur = control_from(con, name, ctrl)
+    local val = ctrl.value
+    local new_data_keys = find_ctrl_vars(con, name, cur, val)
+
     cur.data = JSON3.read(JSON3.write(val), Dict{Symbol,Any})
     cur.data_keys = new_data_keys
     cur.root = root
     con.env.vars[cur.root.id] = root
-    for (name, id) in new_vars
-        local var = Var(con.env, name; id, parent = cur.root.id)
-        verbose(con, "MADE NEW VAR $name")
-        cur.vars[var.name] = var
-    end
     if !new && !isempty(new_data_keys)
         refresh(con.env, (root,); track = false)
         for v in Set(con.env.changed)
@@ -86,10 +107,13 @@ function handle_control_update(con::Connection, name::Symbol, ctrl::JSON3.Object
                 delete!(con.env.changed, v)
             end
         end
-        verbose(con, "CTRL ROOT: ", rootpath, "\n  ROOT:", root, "\n  VALUE: ", root.internal_value)
+        verbose(con, "CTRL ROOT: ", ctrl.root, "\n  ROOT:", root, "\n  VALUE: ", root.internal_value)
+        println("VALUE: $(cur.data)")
         # plug values from data into Julia objects
-        for (_, name) in new_data_keys
-            safe_set(con, cur, cur.vars[name], cur.data[name])
+        for (str, name) in new_data_keys
+            local var = cur.vars[name]
+            safe_set(con, cur, var, cur.data[str])
+            delete!(con.env.changed, var.id)
         end
     end
     return true
@@ -192,7 +216,7 @@ function compute_data(ctrl::ControlData)
     # maintain order
     return (;
         (
-            namefor(ctrl.vars[name], str) => ctrl.data[name] for
+            namefor(ctrl.vars[name], string(str)) => ctrl.data[name] for
             (str, name) in ctrl.data_keys
         )...
     )

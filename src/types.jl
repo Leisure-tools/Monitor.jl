@@ -81,7 +81,7 @@ end
 @kwdef mutable struct ControlData
     name::Symbol
     data::Dict{Symbol,Any}
-    data_keys::Vector{Pair{String,Symbol}} = Pair{String,Symbol}[]
+    data_keys::Vector{Pair{Symbol,Symbol}} = Pair{Symbol,Symbol}[]
     vars::Dict{Symbol,Var} = Dict{Symbol,Var}()
     update::Float64
     root::Var

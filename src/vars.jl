@@ -1,5 +1,4 @@
 using JSON3: JSON3, StructTypes
-import Base.@invokelatest
 
 const REF = r"^\?([0-9]+)$"
 const LOCAL_ID = r"^@/([0-9]+)$"
@@ -103,11 +102,8 @@ function basic_deref(env::VarEnv, obj)
     return obj
 end
 
-function parsemetadata(meta::AbstractString, original_meta = nothing)
-    metadata = Dict{Symbol,String}()
-    if original_meta !== nothing
-        merge!(metadata, original_meta)
-    end
+function parsemetadata(meta::AbstractString, original_meta = Dict{Symbol, String}())
+    metadata = Dict{Symbol,String}(original_meta)
     while meta !== ""
         (m = match(METAPROP, meta)) === nothing && throw("Bad metaproperty format: $(meta)")
         metadata[Symbol(m[1])] = m[2] === nothing ? "" : string(m[2])
@@ -123,6 +119,7 @@ function parsepath(pathstr::AbstractString)
     pathstr = strip(pathstr)
     local path = PathComponent[]
     local matches = [eachmatch(JPATH_COMPONENT, pathstr)...]
+    println("MATCHES: ", matches)
     isempty(matches) && return path
     local parent = String[]
     local start = 1
@@ -190,6 +187,7 @@ function basicvar(
     level = 0,
     value = nothing,
     json_value = nothing,
+    metadata::Dict{Symbol,String} = Dict{Symbol,String}(),
     kw...,
 ) where {T}
     args = (; value, kw...)
@@ -200,7 +198,8 @@ function basicvar(
         m = match(VAR_NAME, string(name))
         if m !== nothing && m[2] !== nothing
             name = m[1]
-            metadata = parsemetadata(m[2], haskey(args, :metadata) ? args.metadata : Dict())
+            metadata = parsemetadata(m[2], metadata)
+            println("METADATA: ", metadata)
             if haskey(metadata, :path) && !haskey(args, :path)
                 args = (; args..., path = parsepath(metadata[:path]))
             end
@@ -253,7 +252,9 @@ end
 dicty(::Union{AbstractDict,NamedTuple}) = true
 dicty(::T) where {T} = hasmethod(haskey, Tuple{T,Symbol}) && hasmethod(get, Tuple{T,Symbol})
 
-basic_get_path(ctx::VarCtx, path) = basic_get_path(ctx.env, ctx.var, path)
+get_path(ctx::VarCtx, path) = get_path(ctx.env, ctx.var, path)
+
+get_path(env::VarEnv, var::Var, path) = invokelatest(basic_get_path, env, var, path)
 
 function basic_get_path(env::VarEnv{T}, var::Var, path) where {T}
     exc(type, msg, err) = throw(VarException(type, env, var, msg, err))
@@ -332,7 +333,10 @@ end
 set_value(env::VarEnv, var::Var, value; creating = false) =
     set_value(VarCtx(env, var), value; creating)
 
-function set_value(ctx::VarCtx, value; creating = false)
+set_value(ctx::VarCtx, value; creating = false) =
+    invokelatest(basic_set_value, ctx, value; creating)
+
+function basic_set_value(ctx::VarCtx, value; creating = false)
     local env = ctx.env
     local var = ctx.var
     creating &&
@@ -340,26 +344,11 @@ function set_value(ctx::VarCtx, value; creating = false)
         return
     !var.writeable &&
         throw(VarException(:writeable_error, env, var, "variable $var is not writeable"))
-    cur = basic_get_path(env, var, var.path[1:end-1])
+    cur = get_path(env, var, var.path[1:end-1])
     isnothing(cur) &&
         return
     el = var.path[end]
     value = var.value_conversion(value)
-    local ft = fieldtype(typeof(cur), var.path[end])
-    if !(typeof(value) <: ft)
-        try
-            value = StructTypes.constructfrom(ft, value)
-        catch err
-            check_sigint(err)
-            throw(
-                VarException(
-                    :path,
-                    ctx,
-                    "error setting field $(el) in path $(var.path) for $var: could not convert value <$(value)> to type $ft",
-                ),
-            )
-        end
-    end
     if cur === nothing
         throw(
             VarException(
@@ -370,6 +359,21 @@ function set_value(ctx::VarCtx, value; creating = false)
         )
     elseif el isa Symbol
         try
+            local ft = fieldtype(typeof(cur), el)
+            if !(typeof(value) <: ft)
+                try
+                    value = StructTypes.constructfrom(ft, value)
+                catch err
+                    check_sigint(err)
+                    throw(
+                        VarException(
+                            :path,
+                            ctx,
+                            "error setting field $(el) in path $(var.path) for $var: could not convert value <$(value)> to type $ft",
+                        ),
+                    )
+                end
+            end
             setproperty!(cur, el, value)
         catch err
             check_sigint(err)
@@ -550,7 +554,7 @@ function compute_value(ctx::VarCtx)
     local old = var.internal_value
     !var.readable &&
         throw(VarException(:readable_error, ctx, "variable $var is not readable"))
-    use_value(ctx, basic_get_path(ctx, var.path))
+    use_value(ctx, get_path(ctx, var.path))
     return !is_same(old, var.internal_value)
 end
 
@@ -565,7 +569,7 @@ end
 function refresh(env::VarEnv, var::Var; throw = false, track = true)
     try
         if compute_value(env, var) && track
-            println("CHANGED VAR $(var.name): ", var.json_value)
+            #println("CHANGED VAR $(var.name): ", var.json_value)
             push!(env.changed, var.id)
         end
     catch err
