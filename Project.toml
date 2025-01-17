@@ -1,0 +1,14 @@
+name = "Control"
+uuid = "6f9f2883-8618-4668-b432-259098b587ed"
+authors = ["Bill Burdick <bill.burdick@gmail.com>"]
+version = "0.1.0"
+
+[deps]
+JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+UUIDs = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

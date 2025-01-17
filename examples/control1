@@ -1,0 +1,18 @@
+#!/bin/sh
+#
+# send JSON to FILE with
+# control1 FILE
+#
+
+if [ "$1" = "" ]; then
+   echo 1>&2 Usage: $(basename "$0") PIPE
+   exit 1
+fi
+yq -o=json -I=0 . <<here > "$1"
+control1:
+  type: control
+  root: '@person'
+  value:
+    name: Fred
+    number: "23"
+here
