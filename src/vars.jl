@@ -102,7 +102,7 @@ function basic_deref(env::VarEnv, obj)
     return obj
 end
 
-function parsemetadata(meta::AbstractString, original_meta = Dict{Symbol, String}())
+function parsemetadata(meta::AbstractString, original_meta = Dict{Symbol,String}())
     metadata = Dict{Symbol,String}(original_meta)
     while meta !== ""
         (m = match(METAPROP, meta)) === nothing && throw("Bad metaproperty format: $(meta)")
@@ -355,8 +355,7 @@ function basic_set_value(ctx::VarCtx, value; creating = false)
     !var.writeable &&
         throw(VarException(:writeable_error, env, var, "variable $var is not writeable"))
     cur = get_path(env, var, var.path[1:end-1])
-    isnothing(cur) &&
-        return
+    isnothing(cur) && return
     el = var.path[end]
     value = var.value_conversion(value)
     if cur === nothing
@@ -369,7 +368,11 @@ function basic_set_value(ctx::VarCtx, value; creating = false)
                     value = StructTypes.constructfrom(ft, value)
                 catch err
                     check_sigint(err)
-                    exc(:path, "error setting field $(el) in path $(var.path) for $var: could not convert value <$(value)> to type $ft", err)
+                    exc(
+                        :path,
+                        "error setting field $(el) in path $(var.path) for $var: could not convert value <$(value)> to type $ft",
+                        err,
+                    )
                 end
             end
             setproperty!(cur, el, value)
@@ -390,28 +393,44 @@ function basic_set_value(ctx::VarCtx, value; creating = false)
                 el(ctx, cur, parent)
             catch err
                 check_sigint(err)
-                exc(:program, "error calling $var action function $el for $(typeof.((env, var, cur, parent))): $err", err)
+                exc(
+                    :program,
+                    "error calling $var action function $el for $(typeof.((env, var, cur, parent))): $err",
+                    err,
+                )
             end
         elseif hasmethod(el, typeof.((ctx, cur)))
             try
                 el(ctx, cur)
             catch err
                 check_sigint(err)
-                exc(:program, "error calling $var action function $el for $(typeof.((env, var, cur))): $err", err)
+                exc(
+                    :program,
+                    "error calling $var action function $el for $(typeof.((env, var, cur))): $err",
+                    err,
+                )
             end
         elseif :.. in var.path && hasmethod(el, typeof.((cur, parent)))
             try
                 el(cur, parent)
             catch err
                 check_sigint(err)
-                exc(:program, "error calling $var action function $el for $(typeof.((cur, parent))): $err", err)
+                exc(
+                    :program,
+                    "error calling $var action function $el for $(typeof.((cur, parent))): $err",
+                    err,
+                )
             end
         elseif hasmethod(el, typeof.((cur,)))
             try
                 el(cur)
             catch err
                 check_sigint(err)
-                exc(:program, "error calling $var action function $el for $(typeof.((cur,))): $err", err)
+                exc(
+                    :program,
+                    "error calling $var action function $el for $(typeof.((cur,))): $err",
+                    err,
+                )
             end
         else
             exc(:path, "no $var action function $el for $(typeof.((cur,)))")
@@ -511,8 +530,7 @@ function refresh(env::VarEnv, vars = values(env.vars); throw = false, track = tr
 end
 
 function refresh(env::VarEnv, var::Var; throw = false, track = true)
-    var.id ∈env.changed &&
-        return
+    var.id ∈ env.changed && return
     try
         if compute_value(env, var) && track
             #println("CHANGED VAR $(var.name): ", var.json_value)

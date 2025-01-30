@@ -117,7 +117,7 @@ The `spawn` keyword can be
 function start(
     data::T;
     roots::Dict{Symbol} = Dict{Symbol}(),
-    spawn::Union{Bool, Nothing} = true,
+    spawn::Union{Bool,Nothing} = true,
     checkincoming = true,
     checkoutgoing = true,
     verbosity = 0,
@@ -195,7 +195,7 @@ function check_incoming_updates(con::Connection)
                 local updated = Set{Symbol}()
                 sync(con) do
                     handle_updates(con, updates, updated)
-                    refresh(con; force=updated)
+                    refresh(con; force = updated)
                 end
             end
         catch err
@@ -215,11 +215,12 @@ end
 
 queue_update(name::Symbol, data) = queue_update(CURRENT_CONNECTION[], name, data)
 
-queue_update(::Nothing, ::Symbol, ::Any) = try
-	error("Attempt to queue to a shut down connection")
-catch err
-    @info err exception=(err,catch_backtrace())
-end
+queue_update(::Nothing, ::Symbol, ::Any) =
+    try
+        error("Attempt to queue to a shut down connection")
+    catch err
+        @info err exception = (err, catch_backtrace())
+    end
 
 function queue_update(con::Connection, name::Symbol, data::Any)
     verbose(con, "Adding update MONITOR ", name, " VALUE ", json(data))
@@ -228,7 +229,7 @@ end
 
 json(value) = JSON3.read(JSON3.write(value))
 
-function refresh(con::Connection; force=:none)
+function refresh(con::Connection; force = :none)
     find_outgoing_updates(con; force)
     if !isempty(con.outgoing)
         local updates = Dict(con.outgoing)
@@ -239,7 +240,7 @@ function refresh(con::Connection; force=:none)
         catch e
             check_sigint(e)
             err = e
-            @error "Error sending update: $err" exception=(err,catch_backtrace())
+            @error "Error sending update: $err" exception = (err, catch_backtrace())
         end
     end
 end

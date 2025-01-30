@@ -43,7 +43,13 @@ find_monitor_vars(::Connection, name::Symbol, ::MonitorData, val) =
 
 find_monitor_vars(::Connection, ::Symbol, ::MonitorData, ::Nothing) = Pair{String,Symbol}[]
 
-function find_monitor_vars(con::Connection, new:: Bool, name::Symbol, cur::MonitorData, mon::JSON3.Object)
+function find_monitor_vars(
+    con::Connection,
+    new::Bool,
+    name::Symbol,
+    cur::MonitorData,
+    mon::JSON3.Object,
+)
     local val = mon.value
     local new_data_keys = Pair{Symbol,Symbol}[]
     local old_vars = Set{Symbol}()
@@ -65,8 +71,7 @@ function find_monitor_vars(con::Connection, new:: Bool, name::Symbol, cur::Monit
             end
             if haskey(cur.vars, name)
                 local var = cur.vars[name]
-                var.metadata == meta &&
-                    continue
+                var.metadata == meta && continue
                 # metadata changed
                 if var.metadata[:path] != meta[:path]
                     var.path = parsepath(meta[:path])
@@ -83,8 +88,7 @@ function find_monitor_vars(con::Connection, new:: Bool, name::Symbol, cur::Monit
             end
         end
         for (name, var) in cur.vars
-            (name ∈ old_vars || var.parent == NO_ID) &&
-                continue
+            (name ∈ old_vars || var.parent == NO_ID) && continue
             local parent = con.env.vars[var.parent]
             haskey(parent.children, name) && delete!(parent.children, name)
         end
@@ -98,7 +102,12 @@ function find_monitor_vars(con::Connection, new:: Bool, name::Symbol, cur::Monit
     return new_data_keys
 end
 
-function handle_update(con::Connection, name::Symbol, update::JSON3.Object, updated::Set{Symbol})
+function handle_update(
+    con::Connection,
+    name::Symbol,
+    update::JSON3.Object,
+    updated::Set{Symbol},
+)
     if update.type == "monitor"
         verbose(con, "RECEIVED MONITOR '$name'", update)
         if handle_monitor_update(con, name, update)
@@ -133,7 +142,15 @@ function handle_monitor_update(con::Connection, name::Symbol, mon::JSON3.Object)
         #        delete!(con.env.changed, v)
         #    end
         #end
-        verbose(con, "MONITOR ROOT: ", mon.root, "\n  ROOT:", root, "\n  VALUE: ", root.internal_value)
+        verbose(
+            con,
+            "MONITOR ROOT: ",
+            mon.root,
+            "\n  ROOT:",
+            root,
+            "\n  VALUE: ",
+            root.internal_value,
+        )
         #println("VALUE: $(cur.data)")
         # plug values from data into Julia objects
         for (str, name) in new_data_keys
@@ -158,7 +175,7 @@ function handle_eval(con::Connection, name::Symbol, mon::MonitorData)
             Main.eval(Meta.parse(str))
         catch err
             check_sigint(err)
-            @error "Error evaluationg block: $err" exception=(err,catch_backtrace())
+            @error "Error evaluationg block: $err" exception = (err, catch_backtrace())
         end
     end
 end
@@ -169,7 +186,8 @@ function safe_set(con::Connection, mon::MonitorData, var::Var, value)
         set_value(con.env, var, deref(con.env, value))
     catch err
         check_sigint(err)
-        @error "Error setting value in monitor $(mon.name) for variable $(var.name)" exception = (err, catch_backtrace())
+        @error "Error setting value in monitor $(mon.name) for variable $(var.name)" exception =
+            (err, catch_backtrace())
     end
 end
 
@@ -178,14 +196,15 @@ function find_outgoing_updates(con::Connection; force = :none)
     local check = Set{Int}()
     local monitors = Set{Symbol}()
     local force_update = if force == :all
-        (_)-> true
+        (_) -> true
     elseif force isa Set
-        (mon)-> mon.name ∈ force
+        (mon) -> mon.name ∈ force
     else
-        (_)-> false
+        (_) -> false
     end
     for (_, mon) in con.monitors
-        !force_update(mon) && t - (con.lastcheck ÷ mon.update) * mon.update < mon.update &&
+        !force_update(mon) &&
+            t - (con.lastcheck ÷ mon.update) * mon.update < mon.update &&
             continue
         !isempty(mon.vars) && push!(check, (v.id for (_, v) in mon.vars)...)
         push!(check, mon.root.id)
@@ -254,8 +273,10 @@ function compute_data(mon::MonitorData)
         type = "monitor",
         root = mon.rootpath,
         value = (;
-                 (namefor(mon.vars[name], string(str)) => mon.data[name] for
-                      (str, name) in mon.data_keys
-                      )...)
+            (
+                namefor(mon.vars[name], string(str)) => mon.data[name] for
+                (str, name) in mon.data_keys
+            )...
+        ),
     )
 end

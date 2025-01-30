@@ -17,8 +17,7 @@ function get_updates(con::Connection{PipeCon}, ::Float64)
     local input = read(`cat $(con.data.input_pipe_name)`, String)
     verbose(con, "GOT INPUT: ", input)
     for line in split(input, "\n")
-        isempty(line) &&
-            continue
+        isempty(line) && continue
         verbose(con, "JSON: $line")
         local change = JSON3.read(line, Dict)
         merge!(changes, change)
@@ -30,7 +29,7 @@ function send_updates(con::Connection{PipeCon}, outgoing::Dict)
     @spawn begin
         verbose(con, "PIPEY SENDING UPDATES: $(outgoing)")
         #local output = open(con.data.output_pipe_name, "w")
-        local output = open(pipeline(`cat`, stdout=con.data.output_pipe_name), "w")
+        local output = open(pipeline(`cat`, stdout = con.data.output_pipe_name), "w")
         write(output, JSON3.write(outgoing))
         close(output)
     end

@@ -17,9 +17,9 @@ end
 
 # note if we need to group by stream, we can override handle_updates
 function Monitor.get_updates(con::Connection{RedisCon}, timeout::Float64)
-    local update = xread(con.data; block=millis(timeout), con.data.input_streams...)
+    local update = xread(con.data; block = millis(timeout), con.data.input_streams...)
     local dict = Dict{String,Any}()
-    
+
     for (stream, result) in updates
         for (_, update) in result
             if length(update) != 2 || update[1] != "batch"
