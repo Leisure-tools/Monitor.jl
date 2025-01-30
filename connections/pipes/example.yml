@@ -1,0 +1,6 @@
+person1:
+  type: monitor
+  root: '@person'
+  value:
+    name: fred
+    number: "1313"

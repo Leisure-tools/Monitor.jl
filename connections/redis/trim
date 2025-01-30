@@ -1,0 +1,55 @@
+#!/bin/sh
+while true; do
+    case "$1" in
+        --from)
+            FROM=true
+            ;;
+        --loop)
+            LOOP=true
+            ;;
+        *)
+            if expr "$2" : "^[^-]*-0$" > /dev/null; then
+                FROM=true
+            fi
+            break
+            ;;
+    esac
+    shift
+done
+
+if [ $# != 2 ]; then
+    echo 1>&2 Usage: $(basename "$0") STREAM RETAINEDMILLIS
+    exit 1
+fi
+
+if [ "$LOOP" = true ]; then
+    if [ "$FROM" = true ]; then
+        echo 1>&2 Cannot loop with a min time
+        exit 1
+    fi
+    sleeptime="$(expr "$2" / 1000)"
+    if [ $(expr "$2" % 1000) -ge 500 ]; then
+        sleeptime="$(expr "$sleeptime" + 1)"
+    fi
+    while true; do
+        min="$(expr $(date +%s%3N) - "$2")-0"
+        redis-cli xtrim "$1" minid '~' "$min"
+        sleep $sleeptime
+    done
+    exit
+fi
+
+if [ "$FROM" = true ]; then
+    case "$2" in
+        *-0)
+            min="$2"
+            ;;
+        *)
+            min="$2-0"
+            ;;
+    esac
+else
+    min="$(expr $(date +%s%3N) - "$2")-0"
+fi
+
+redis-cli xtrim "$1" minid '~' "$min"

@@ -1,5 +1,6 @@
 const NO_ID = -1
 const PathComponent = Union{Number,Symbol,Function}
+const JsonType = Union{JSON3.Object,JSON3.Array,String,Float64,Int64,Bool,Nothing}
 
 """
     Var
@@ -16,7 +17,7 @@ A variable:
     metadata::Dict{Symbol,AbstractString} = Dict()
     children::Dict{Symbol,Var} = Dict()
     properties::Dict{Symbol,Any} = Dict() # misc properties of any type
-    active = true # controls refreshing
+    active = true # monitors refreshing
     internal_value = nothing
     readable::Bool = true
     writeable::Bool = true
@@ -78,26 +79,35 @@ struct VarException{T} <: Exception
         new{type}(type, ctx.env, ctx.var, msg, cause)
 end
 
-@kwdef mutable struct ControlData
+@kwdef mutable struct MonitorData
     name::Symbol
+    rootpath::String
     data::Dict{Symbol,Any}
     data_keys::Vector{Pair{Symbol,Symbol}} = Pair{Symbol,Symbol}[]
     vars::Dict{Symbol,Var} = Dict{Symbol,Var}()
     update::Float64
     root::Var
+    disabled::Bool = false
 end
 
-@kwdef mutable struct Connection{T}
-    data::T
+"""
+Connection{DataType}
+
+DataType is the type of the `data` field
+"""
+@kwdef mutable struct Connection{DataType}
+    data::DataType
     channel::Channel{Function} = Channel{Function}()
     running::Bool = true
     pending_update::Bool = false
-    env::VarEnv{Connection{T}} = VarEnv{Connection{T}}()
-    controls::Dict{Symbol,ControlData} = Dict{Symbol,ControlData}()
+    env::VarEnv{Connection{DataType}} = VarEnv{Connection{DataType}}()
+    monitors::Dict{Symbol,MonitorData} = Dict{Symbol,MonitorData}()
     changed::Set{Var} = Set{Var}()
+    outgoing::Dict{Symbol,JsonType} = Dict{Symbol,JsonType}() # data to be sent out
     lastcheck::Float64 = 0
     default_update::Float64 = 0.25
     verbosity::Int64 = 0
+    indicate_start::Bool = true
 end
 
 function Connection(data::T; kw...) where {T}
@@ -105,3 +115,5 @@ function Connection(data::T; kw...) where {T}
     con.env.data = con
     con
 end
+
+const CURRENT_CONNECTION = ScopedValue{Union{Nothing,Connection}}(nothing)

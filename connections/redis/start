@@ -1,0 +1,30 @@
+#!/bin/sh
+
+# Run redis
+# trim all streams every PERIOD seconds
+
+DIR=$(dirname "$(realpath "$0")")
+#PERIOD=120
+PERIOD=15
+
+trimall() {
+    while true; do
+        for stream in $(redis-cli --json SCAN 0 TYPE stream | jq -c ".[1][]|."); do
+            #echo trim $stream
+            "$DIR/trim" "$stream" ${PERIOD}000
+        done
+        sleep $PERIOD
+    done
+}
+
+die() {
+    rm -f "$DIR/dump.rdb"
+    echo EXITING
+    kill $1
+}
+
+(sleep 5; trimall)&
+trap "die $!" EXIT
+trap exit INT TERM
+cd "$DIR"
+redis-server

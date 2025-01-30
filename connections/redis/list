@@ -1,0 +1,6 @@
+#!/bin/sh
+if [ $# != 1 ]; then
+   echo 1>&2 Usage: $(basename "$0") STREAM
+   exit 1
+fi
+exec redis-cli --json xrange "$1" - + | jq -c ".[]|[(.[0]), .[1][1]]"

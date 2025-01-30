@@ -1,0 +1,6 @@
+#!/bin/sh
+if [ $# != 2 ]; then
+    echo 1>&2 Usage: "$(basename $0)" STREAM BATCH
+    exit 1
+fi
+exec redis-cli xadd "$1" '*' batch "$2"

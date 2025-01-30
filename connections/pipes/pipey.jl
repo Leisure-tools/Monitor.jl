@@ -1,7 +1,7 @@
 module Pipey
 
-using Control: Control, Connection, JSON3, verbose
-import Control: get_updates, send_updates
+using Monitor: Monitor, Connection, JSON3, verbose
+import Monitor: get_updates, send_updates
 import Base.Threads.@spawn
 
 @kwdef mutable struct PipeCon
@@ -26,12 +26,12 @@ function get_updates(con::Connection{PipeCon}, ::Float64)
     return JSON3.read(JSON3.write(changes))
 end
 
-function send_updates(con::Connection{PipeCon}, changes::Dict{Symbol})
+function send_updates(con::Connection{PipeCon}, outgoing::Dict)
     @spawn begin
-        verbose(con, "PIPEY SENDING UPDATES")
+        verbose(con, "PIPEY SENDING UPDATES: $(outgoing)")
         #local output = open(con.data.output_pipe_name, "w")
         local output = open(pipeline(`cat`, stdout=con.data.output_pipe_name), "w")
-        write(output, JSON3.write(changes))
+        write(output, JSON3.write(outgoing))
         close(output)
     end
 end

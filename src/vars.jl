@@ -119,7 +119,7 @@ function parsepath(pathstr::AbstractString)
     pathstr = strip(pathstr)
     local path = PathComponent[]
     local matches = [eachmatch(JPATH_COMPONENT, pathstr)...]
-    println("MATCHES: ", matches)
+    #println("MATCHES: ", matches)
     isempty(matches) && return path
     local parent = String[]
     local start = 1
@@ -199,7 +199,7 @@ function basicvar(
         if m !== nothing && m[2] !== nothing
             name = m[1]
             metadata = parsemetadata(m[2], metadata)
-            println("METADATA: ", metadata)
+            #println("METADATA: ", metadata)
             if haskey(metadata, :path) && !haskey(args, :path)
                 args = (; args..., path = parsepath(metadata[:path]))
             end
@@ -233,6 +233,15 @@ function basicvar(
     end
     !isempty(v.metadata) && @debug("VAR $(v.name) metadata: $(v.metadata)")
     return v
+end
+
+function remove(env::VarEnv, var::Var)
+    if var.parent != NO_ID
+        local parent = env.vars[var.parent]
+
+        delete!(parent.children, var.name)
+    end
+    delete!(env.vars, var.id)
 end
 
 typename(value) = typename(typeof(value))
@@ -339,6 +348,7 @@ set_value(ctx::VarCtx, value; creating = false) =
 function basic_set_value(ctx::VarCtx, value; creating = false)
     local env = ctx.env
     local var = ctx.var
+    exc(type, msg, err = NoCause) = throw(VarException(type, ctx, msg, err))
     creating &&
         (haskey(var.metadata, :create) || var.action || !isempty(var.path)) &&
         return
@@ -350,13 +360,7 @@ function basic_set_value(ctx::VarCtx, value; creating = false)
     el = var.path[end]
     value = var.value_conversion(value)
     if cur === nothing
-        throw(
-            VarException(
-                :path,
-                ctx,
-                "error setting field $(el) in path $(var.path) for $var",
-            ),
-        )
+        exc(:path, ctx, "error setting field $(el) in path $(var.path) for $var")
     elseif el isa Symbol
         try
             local ft = fieldtype(typeof(cur), el)
@@ -365,19 +369,13 @@ function basic_set_value(ctx::VarCtx, value; creating = false)
                     value = StructTypes.constructfrom(ft, value)
                 catch err
                     check_sigint(err)
-                    throw(
-                        VarException(
-                            :path,
-                            ctx,
-                            "error setting field $(el) in path $(var.path) for $var: could not convert value <$(value)> to type $ft",
-                        ),
-                    )
+                    exc(:path, "error setting field $(el) in path $(var.path) for $var: could not convert value <$(value)> to type $ft", err)
                 end
             end
             setproperty!(cur, el, value)
         catch err
             check_sigint(err)
-            rethrow(VarException(:path, ctx, "error setting $var field $el", err))
+            exc(:path, "error setting $var field $el", err)
         end
     elseif el isa Number
         if el == length(cur) + 1
@@ -392,102 +390,48 @@ function basic_set_value(ctx::VarCtx, value; creating = false)
                 el(ctx, cur, parent)
             catch err
                 check_sigint(err)
-                rethrow(
-                    VarException(
-                        :program,
-                        ctx,
-                        "error calling $var action function $el for $(typeof.((env, var, cur, parent))): $err",
-                        err,
-                    ),
-                )
+                exc(:program, "error calling $var action function $el for $(typeof.((env, var, cur, parent))): $err", err)
             end
         elseif hasmethod(el, typeof.((ctx, cur)))
             try
                 el(ctx, cur)
             catch err
                 check_sigint(err)
-                rethrow(
-                    VarException(
-                        :program,
-                        ctx,
-                        "error calling $var action function $el for $(typeof.((env, var, cur))): $err",
-                        err,
-                    ),
-                )
+                exc(:program, "error calling $var action function $el for $(typeof.((env, var, cur))): $err", err)
             end
         elseif :.. in var.path && hasmethod(el, typeof.((cur, parent)))
             try
                 el(cur, parent)
             catch err
                 check_sigint(err)
-                rethrow(
-                    VarException(
-                        :program,
-                        ctx,
-                        "error calling $var action function $el for $(typeof.((cur, parent))): $err",
-                        err,
-                    ),
-                )
+                exc(:program, "error calling $var action function $el for $(typeof.((cur, parent))): $err", err)
             end
         elseif hasmethod(el, typeof.((cur,)))
             try
                 el(cur)
             catch err
                 check_sigint(err)
-                rethrow(
-                    VarException(
-                        :program,
-                        ctx,
-                        "error calling $var action function $el for $(typeof.((cur,))): $err",
-                        err,
-                    ),
-                )
+                exc(:program, "error calling $var action function $el for $(typeof.((cur,))): $err", err)
             end
         else
-            throw(
-                VarException(
-                    :path,
-                    ctx,
-                    "no $var action function $el for $(typeof.((cur,)))",
-                ),
-            )
+            exc(:path, "no $var action function $el for $(typeof.((cur,)))")
         end
     elseif hasmethod(el, typeof.((ctx, cur, value)))
         try
             el(ctx, cur, value)
         catch err
             check_sigint(err)
-            rethrow(
-                VarException(
-                    :program,
-                    ctx,
-                    "error calling $var setter function $el: $err",
-                    err,
-                ),
-            )
+            exc(:program, "error calling $var setter function $el: $err", err)
         end
     elseif hasmethod(el, typeof.((cur, value)))
         try
             el(cur, value)
         catch err
             check_sigint(err)
-            rethrow(
-                VarException(
-                    :program,
-                    ctx,
-                    "error calling $var setter function $el: $err",
-                    err,
-                ),
-            )
+            exc(:program, "error calling $var setter function $el: $err", err)
         end
     else
-        throw(
-            VarException(
-                :path,
-                ctx,
-                "no $var setter function $el for $(typeof.((cur, value)))",
-            ),
-        )
+        exc(:path, "no $var setter function $el for $(typeof.((cur, value)))")
     end
 end
 
@@ -567,6 +511,8 @@ function refresh(env::VarEnv, vars = values(env.vars); throw = false, track = tr
 end
 
 function refresh(env::VarEnv, var::Var; throw = false, track = true)
+    var.id ∈env.changed &&
+        return
     try
         if compute_value(env, var) && track
             #println("CHANGED VAR $(var.name): ", var.json_value)

@@ -1,0 +1,19 @@
+#!/bin/sh
+#
+# send JSON to REDIS
+# then listen for stream output
+#
+
+if [ "$1" = "" ]; then
+   echo 1>&2 Usage: $(basename "$0") STREAM
+   exit 1
+fi
+redis-cli xadd "$1" '*' batch $(yq -o=json -I=0 . <<here
+monitor1:
+  type: monitor
+  root: '@person'
+  value:
+    name: Freddy
+    number: "23"
+here
+)
