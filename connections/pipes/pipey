@@ -7,5 +7,6 @@ if [ $# != 2 ]; then
    echo 1>&2 Usage: $(basename "$0") INPUTPIPE OUTPUTPIPE
    exit 1
 fi
-exec julia -i -e 'println("STARTING PIPEY"); using Revise, Pkg; Pkg.activate("'"$dir"'"); include(popfirst!(ARGS)); con=test(; verbosity=1); println("Connection is stored in `con`")' "$dir/pipeymain.jl" "$@"
-#exec julia -i -e 'println("STARTING PIPEY"); using Revise, Pkg; Pkg.activate("'"$dir"'"); include(popfirst!(ARGS)); con=test(; verbosity=0); println("Connection is stored in `con`")' "$dir/pipeymain.jl" "$@"
+VERBOSITY=0
+
+exec julia -i -e 'println("STARTING PIPEY"); using Revise, Pkg; Pkg.activate("'"$dir"'"); include(popfirst!(ARGS)); con=test(; verbosity='$VERBOSITY'); println("Connection is stored in `con`")' "$dir/pipeymain.jl" "$@"
