@@ -232,7 +232,7 @@ function find_outgoing_updates(con::Connection; force = :none)
     for (_, mon) in con.monitors
         if haschanges(con, mon)
             verbose(con, "Queuing monitor update for ", mon.name, ": ", compute_data(mon))
-            queue_update(con, mon.name, compute_data(mon))
+            send(con, mon.name, compute_data(mon))
         end
     end
     empty!(con.env.changed)

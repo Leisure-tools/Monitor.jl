@@ -48,7 +48,7 @@ API:
 ```julia
 start(con::Connection; roots::Dict{Symbol,Any}=Dict(), verbosity=0)
 
-queue_update(name, data) -- queue an update to send out
+send(data) -- queue an update to send out
 
 shutdown() -- close the connection
 ```
@@ -213,16 +213,16 @@ function handle_updates(con::Connection, updates::JSON3.Object, updated::Set{Sym
     end
 end
 
-queue_update(name::Symbol, data) = queue_update(CURRENT_CONNECTION[], name, data)
+send(name::Symbol, data) = send(CURRENT_CONNECTION[], name, data)
 
-queue_update(::Nothing, ::Symbol, ::Any) =
+send(::Nothing, ::Symbol, ::Any) =
     try
         error("Attempt to queue to a shut down connection")
     catch err
         @info err exception = (err, catch_backtrace())
     end
 
-function queue_update(con::Connection, name::Symbol, data::Any)
+function send(con::Connection, name::Symbol, data::Any)
     verbose(con, "Adding update MONITOR ", name, " VALUE ", json(data))
     con.outgoing[name] = json(data)
 end
