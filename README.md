@@ -4,7 +4,7 @@ Listen to and update monitors on Julia.
 Monitor.jl is a pubsub system that communicates with "blocks" (JSON objects) which allow you to
 monitor and change data values in subscribing Julia programs.
 
-![screencap](screencap.webm)
+![screencap](screencap.gif)
 
 Block types:
 
