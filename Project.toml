@@ -1,4 +1,4 @@
-name = "Control"
+name = "Monitor"
 uuid = "6f9f2883-8618-4668-b432-259098b587ed"
 authors = ["Bill Burdick <bill.burdick@gmail.com>"]
 version = "0.1.0"
