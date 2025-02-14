@@ -16,39 +16,41 @@ Monitor.jl supports 4 types of blocks with some of these common properties:
 * **`type:`** how a subscriber should interpret the block. Supported types are "monitor", "code", "data", and "delete".  
 
 Block types:  
-  Monitor blocks -- monitor Julia values  
-    * **`type:`** "monitor"
-    * **`topic:`** controls which program(s) install the monitor
-    * **`targets:`** controls which program(s) install the monitor
-    * **`updateTopics:`** controls which programs receive updates  
+
+* Monitor blocks -- monitor Julia values  
+  * **`type:`** "monitor"
+  * **`topic:`** controls which program(s) install the monitor
+  * **`targets:`** controls which program(s) install the monitor
+  * **`updateTopics:`** controls which programs receive updates  
       A UI sending a monitor with this property should automatically subscribe to the topics.  
-    * **`updateTargets:`** controls which programs receive updates  
-    * **`tags:`** identifyies a set of blocks. Can be a string or an array of strings  
-    * **`root:`** root value for the variables  
-    * **`value:`** variables that monitor values  
-        Initial values are not placed into Julia but incoming changes are not placed into Julia data  
-  Code blocks -- run Julia code  
-    * **`type:`** "code"  
-    * **`topic:`** optional topic to publish the block to, when it’s not the default  
-    * **`targets:`** optional list of subscribers that should receive the block (others ignore it)  
-    * **`tags:`** identifyies a set of blocks. Can be a string or an array of strings  
-    * **`language:`** language in which to evaluate code  
-    * **`return:`** true if the code should return a block to be published.  
-    * **`value:`** code to evaluate  
+  * **`updateTargets:`** controls which programs receive updates  
+  * **`tags:`** identifyies a set of blocks. Can be a string or an array of strings  
+  * **`root:`** root value for the variables  
+  * **`value:`** variables that monitor values  
+      Initial values are not placed into Julia but incoming changes are not placed into Julia data  
 
-  Data Blocks -- hold data, can be used for responses, 
-    * **`type:`** "data"  
-    * **`topic:`** optional topic to publish the block to, when it’s not the default  
-    * **`targets:`** optional list of subscribers that should receive the block (others ignore it)  
-    * **`tags:`** identifyies a set of blocks. Can be a string or an array of strings  
-    * **`code:`** optional name of the code block that produced this block, if was one  
-    * **`value:`** value of data  
+* Code blocks -- run Julia code  
+  * **`type:`** "code"  
+  * **`topic:`** optional topic to publish the block to, when it’s not the default  
+  * **`targets:`** optional list of subscribers that should receive the block (others ignore it)  
+  * **`tags:`** identifyies a set of blocks. Can be a string or an array of strings  
+  * **`language:`** language in which to evaluate code  
+  * **`return:`** true if the code should return a block to be published.  
+  * **`value:`** code to evaluate  
 
-  Delete Blocks
-    * **`type:`** "delete"  
-    * **`topic:`** optional topic to publish the block to, when it’s not the default  
-    * **`targets:`** optional list of subscribers that should receive the block (others ignore it)  
-    * **`value:`** NAME, [NAME, ...], {"tagged": TAG}, or {"tagged": [TAG, ...]}  
+* Data Blocks -- hold data, can be used for responses, 
+  * **`type:`** "data"  
+  * **`topic:`** optional topic to publish the block to, when it’s not the default  
+  * **`targets:`** optional list of subscribers that should receive the block (others ignore it)  
+  * **`tags:`** identifyies a set of blocks. Can be a string or an array of strings  
+  * **`code:`** optional name of the code block that produced this block, if was one  
+  * **`value:`** value of data  
+
+* Delete Blocks
+  * **`type:`** "delete"  
+  * **`topic:`** optional topic to publish the block to, when it’s not the default  
+  * **`targets:`** optional list of subscribers that should receive the block (others ignore it)  
+  * **`value:`** NAME, [NAME, ...], {"tagged": TAG}, or {"tagged": [TAG, ...]}  
 
 API:
 
