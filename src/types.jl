@@ -1,5 +1,5 @@
 const NO_ID = -1
-const PathComponent = Union{Number,Symbol,Function}
+const PathComponent = Union{Number,Symbol,Function,Tuple{Symbol,Symbol}}
 const JsonType = Union{JSON3.Object,JSON3.Array,String,Float64,Int64,Bool,Nothing}
 
 """

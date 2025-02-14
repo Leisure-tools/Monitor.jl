@@ -9,16 +9,19 @@ include("pipey.jl")
     number::String
 end
 
+current_person = Person("Herman", "1313")
+
 function test(
     input_pipe_name::String = ARGS[1],
     output_pipe_name::String = ARGS[2];
-    verbosity = 0,
+    verbosity = 1,
 )
     try
         #println("listening...")
         start(
             Pipey.PipeCon(; input_pipe_name, output_pipe_name);
-            roots = Dict(:person => Person("Herman", "1313")),
+            #roots = Dict(:person => Person("Herman", "1313")),
+            roots = Dict{Symbol,Any}(),
             verbosity,
         )
         #println("started...")

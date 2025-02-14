@@ -212,7 +212,7 @@ function sync(f::Function, con::Connection)
         end
     end
     local value = take!(result)
-    exception &&
+    !isnothing(exception) &&
         throw(exception)
     return value
 end
@@ -300,6 +300,7 @@ end
 json(value) = JSON3.read(JSON3.write(value))
 
 function refresh(con::Connection; force = :none)
+    verbose(2, con, "checking for changes")
     find_outgoing_updates(con; force)
     if !isempty(con.outgoing)
         local updates = Dict(con.outgoing)

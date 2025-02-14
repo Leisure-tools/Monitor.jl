@@ -1,6 +1,6 @@
 person1:
   type: monitor
-  root: '@person'
+  root: Main.current_person
   value:
-    name:
-    number:
+    name: Todd
+    number: "12"

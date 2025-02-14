@@ -77,14 +77,12 @@ function find_monitor_vars(
                     var.path = parsepath(meta[:path])
                 end
                 var.metadata = meta
-                push!(con.env.changed, var.id)
             else
                 local var = Var(con.env, name; id = NO_ID, parent = cur.root.id)
                 var.metadata = meta
                 var.path = parsepath(meta[:path])
                 verbose(con, "MADE NEW VAR $name")
                 cur.vars[var.name] = var
-                push!(con.env.changed, var.id)
             end
         end
         for (name, var) in cur.vars
@@ -150,6 +148,7 @@ handle_monitor(con::Connection, name::Symbol, mon::JSON3.Object) =
     base_handle_monitor(con, name, mon)
 
 function base_handle_monitor(con::Connection, name::Symbol, mon::JSON3.Object)
+    verbose(con, "GOT MONITOR: ", mon)
     local missing = filter(∉(keys(mon)), (:root, :value))
     if !isempty(missing)
         @warn "Bad monitor object, missing these keys: $missing"
@@ -165,7 +164,9 @@ function base_handle_monitor(con::Connection, name::Symbol, mon::JSON3.Object)
     cur.root = root
     con.env.vars[cur.root.id] = root
     # set data from incoming monitor
-    if !new && !isempty(new_data_keys) && !cur.disabled
+    if new
+        verbose(con, "New monitor, env changed: ", con.env.changed)
+    elseif !isempty(new_data_keys) && !cur.disabled
         refresh(con.env, (root,); track = false)
         #for v in Set(con.env.changed)
         #    local var = con.env.vars[v]

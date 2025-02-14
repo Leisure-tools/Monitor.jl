@@ -8,6 +8,7 @@ const VAR_NAME =
     r"^([0-9]+|\pL\p{Xan}*)(?:\?((\pL\p{Xan}*)(?:=((?:[^,]|\\,)*))?(?:,(\pL\p{Xan}*)(?:=((?:[^,]|\\,)*))?)*))?$"
 const METAPROP = r"(\pL\p{Xan}*)(?:=((?:[^,]|\\,)*))?(,|$)"
 const ARRAY_INDEX = r"[1-9][0-9]*"
+const QUALIFIED_NAME = r"^[^.]+\.[^.]+$"
 
 const PATH_COMPONENT =
     r"(@?[\p{LC}\p{Lm}\p{Lo}\p{Nl}\p{No}\p{Sc}\p{So}_][\p{LC}\p{Lm}\p{Lo}\p{Nl}\p{No}\p{Sc}\p{So}_!\p{Nd}\p{No}\p{Mn}\p{Mc}\p{Me}\p{Sk}\p{Pc}]*|\[[1-9][0-9]*\]|\(\)|\.)\s*"
@@ -156,6 +157,8 @@ function parsepath(pathstr::AbstractString)
             end
         elseif !isnothing(match(ARRAY_INDEX, frag))
             push!(path, parse(Int, frag))
+        elseif !isnothing(match(QUALIFIED_NAME, frag))
+            push!(path, (Symbol.(split(frag, "."))...,))
         else
             push!(path, Symbol(m.match))
         end
@@ -290,6 +293,13 @@ function basic_get_path(env::VarEnv{T}, var::Var, path) where {T}
                 check_sigint(err)
                 exc(:path, "error getting $var root $el in path $path", err)
             end
+        elseif el isa Tuple
+            try
+                getfield(getfield(Main, el[1]), el[2])
+            catch err
+                check_sigint(err)
+                exc(:path, "error getting $var root $el in path $path", err)
+            end
         elseif cur === nothing
             throw(VarException(:path, env, var, "error getting $var field $el in path $path"))
         elseif el isa Symbol
@@ -358,7 +368,29 @@ function basic_set_value(ctx::VarCtx, value; creating = false)
     isnothing(cur) && return
     el = var.path[end]
     value = var.value_conversion(value)
-    if cur === nothing
+    if el isa Tuple
+        try
+            local mod = getfield(Main, el[1])
+            local var = el[2]
+            local ft = Core.get_binding_type(mod, var)
+            if !(typeof(value) <: ft)
+                try
+                    value = StructTypes.constructfrom(ft, value)
+                catch err
+                    check_sigint(err)
+                    exc(
+                        :path,
+                        "error setting field $(el) in path $(var.path) for $var: could not convert value <$(value)> to type $ft",
+                        err,
+                    )
+                end
+            end
+            mod.eval(:(v-> $var = v))(value)
+        catch err
+            check_sigint(err)
+            exc(:program, "error setting field $el in path $(var.path) for $var")
+        end
+    elseif cur === nothing
         exc(:path, ctx, "error setting field $(el) in path $(var.path) for $var")
     elseif el isa Symbol
         try
