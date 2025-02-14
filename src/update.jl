@@ -110,15 +110,46 @@ function handle_update(
 )
     if update.type == "monitor"
         verbose(con, "RECEIVED MONITOR '$name'", update)
-        if handle_monitor_update(con, name, update)
+        if handle_monitor(con, name, update)
             push!(updated, name)
         end
     elseif update.type == "eval"
         handle_eval(con, name, update)
+    elseif update.type == "data"
+        handle_data(con, name, update)
     end
 end
 
-function handle_monitor_update(con::Connection, name::Symbol, mon::JSON3.Object)
+# Receive a data block, by default just calls base_handle_data(con, name, data)
+handle_data(con::Connection, name::Symbol, data::JSON3.Object) =
+    base_handle_data(con, name, data)
+
+function base_handle_data(con::Connection, name::Symbol, data::JSON3.Object)
+    con.data_blocks[name] = data
+end
+
+# Delete data blocks, by default just calls base_handle_delete(con, del)
+handle_delete(con::Connection, del::JSON3.Object) =
+    base_handle_delete(con, del)
+
+function base_handle_delete(con::Connection, del::JSON3.Object)
+    local names = if del.value isa String
+        [del.value]
+    elseif del.value isa JSON3.Array
+        del.value
+    else
+        error("Bad value for delete block, expecting string or array but got $(del.value)")
+    end
+    for name in names
+        delete!(con.data_blocks, name)
+    end
+end
+
+# Receive a monitor block, by default just calls base_handle_monitor(con, name, mon)
+handle_monitor(con::Connection, name::Symbol, mon::JSON3.Object) =
+    base_handle_monitor(con, name, mon)
+
+function base_handle_monitor(con::Connection, name::Symbol, mon::JSON3.Object)
     local missing = filter(∉(keys(mon)), (:root, :value))
     if !isempty(missing)
         @warn "Bad monitor object, missing these keys: $missing"
@@ -164,10 +195,14 @@ function handle_monitor_update(con::Connection, name::Symbol, mon::JSON3.Object)
     return true
 end
 
-function handle_eval(con::Connection, name::Symbol, mon::MonitorData)
-    local str = get(mon, :value, "")
+# Receive an eval block, by default just calls base_handle_eval(con, name, ev)
+handle_eval(con::Connection, name::Symbol, ev::JSON3.Object) =
+    base_handle_eval(con, name, ev)
+
+function base_handle_eval(con::Connection, name::Symbol, ev::JSON3.Object)
+    local str = get(ev, :value, "")
     if !(str isa String)
-        @error "Bad value type for eval: $(typeof(str))"
+        @error "Bad value type for eval, expecting string but got: $(typeof(str))"
         return
     end
     if !isempty(str)

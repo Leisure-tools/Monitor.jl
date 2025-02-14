@@ -108,6 +108,7 @@ DataType is the type of the `data` field
     default_update::Float64 = 0.25
     verbosity::Int64 = 0
     indicate_start::Bool = true
+    data_blocks::Dict{Symbol,Any} = Dict{Symbol,Any}()
 end
 
 function Connection(data::T; kw...) where {T}

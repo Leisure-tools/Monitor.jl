@@ -4,44 +4,49 @@ Listen to and update monitors on Julia.
 Monitor.jl is a pubsub system that communicates with "blocks" (JSON objects) which allow you to
 monitor and change data values in subscribing Julia programs.
 
-Block types:
+Monitor.jl supports 4 types of blocks with some of these common properties:
 
-  Monitor blocks -- monitor Julia values
-    type: "monitor"
-    origin: ID of the subscriber that produced this block
-    topic: optional topic to publish the block to, when it’s not the default
-    targets: optional list of subscribers that should receive the block (others ignore it)
-    tags: identifyies a set of blocks. Can be a string or an array of strings
-    root: root value for the variables
-    value: variables that monitor values
-        Initial values are not placed into Julia but incoming changes are
+* **`name:`** This block’s name; receivers overwrite the previous values for duplicates  
+* **`origin:`** ID of the subscriber that produced this block  
+* **`topics:`** optional topic(s) to publish the block to – transports should route these  
+* **`tags:`** identifies sets of blocks this block “belongs to”. Can be a string or an array of strings; monitor and data blocks can use this to categorize results and also for cleanup  
+* **`targets:`** optional subscriber or list of subscribers that should receive the block (others ignore it)  
+* **`type:`** how a subscriber should interpret the block. Supported types are "monitor", "code", "data", and "delete".  
 
-  Code blocks -- run Julia code
-    type: "code"
-    origin: ID of the subscriber that produced this block
-    topic: optional topic to publish the block to, when it’s not the default
-    targets: optional list of subscribers that should receive the block (others ignore it)
-    tags: identifyies a set of blocks. Can be a string or an array of strings
-    language: language in which to evaluate code
-    return: true if the code should return a block to be published.
-    value: code to evaluate
+Block types:  
+  Monitor blocks -- monitor Julia values  
+    * **`type:`** "monitor"
+    * **`topic:`** controls which program(s) install the monitor
+    * **`targets:`** controls which program(s) install the monitor
+    * **`updateTopics:`** controls which programs receive updates  
+      A UI sending a monitor with this property should automatically subscribe to the topics.  
+    * **`updateTargets:`** controls which programs receive updates  
+    * **`tags:`** identifyies a set of blocks. Can be a string or an array of strings  
+    * **`root:`** root value for the variables  
+    * **`value:`** variables that monitor values  
+        Initial values are not placed into Julia but incoming changes are not placed into Julia data  
+  Code blocks -- run Julia code  
+    * **`type:`** "code"  
+    * **`topic:`** optional topic to publish the block to, when it’s not the default  
+    * **`targets:`** optional list of subscribers that should receive the block (others ignore it)  
+    * **`tags:`** identifyies a set of blocks. Can be a string or an array of strings  
+    * **`language:`** language in which to evaluate code  
+    * **`return:`** true if the code should return a block to be published.  
+    * **`value:`** code to evaluate  
 
   Data Blocks -- hold data, can be used for responses, 
-    type: "data"
-    origin: ID of the subscriber that produced this block
-    topic: optional topic to publish the block to, when it’s not the default
-    targets: optional list of subscribers that should receive the block (others ignore it)
-    tags: identifyies a set of blocks. Can be a string or an array of strings
-    code: optional name of the code block that produced this block, if was one
-    value: value of data
+    * **`type:`** "data"  
+    * **`topic:`** optional topic to publish the block to, when it’s not the default  
+    * **`targets:`** optional list of subscribers that should receive the block (others ignore it)  
+    * **`tags:`** identifyies a set of blocks. Can be a string or an array of strings  
+    * **`code:`** optional name of the code block that produced this block, if was one  
+    * **`value:`** value of data  
 
   Delete Blocks
-    type: "delete"
-    origin: ID of the subscriber that produced this block
-    topic: optional topic to publish the block to, when it’s not the default
-    targets: optional list of subscribers that should receive the block (others ignore it)
-    value: NAME, [NAME, ...], {"tagged": TAG}, or {"tagged": [TAG, ...]}
-
+    * **`type:`** "delete"  
+    * **`topic:`** optional topic to publish the block to, when it’s not the default  
+    * **`targets:`** optional list of subscribers that should receive the block (others ignore it)  
+    * **`value:`** NAME, [NAME, ...], {"tagged": TAG}, or {"tagged": [TAG, ...]}  
 
 API:
 
@@ -58,8 +63,10 @@ ADDING YOUR OWN TRANSPORTS
 You can make your own transport by implementing two required handlers:
 
 ```julia
+# returns updates, an iterator of Symbol=>JSON3.Object, this is allowed to block
 get_updates(con::Connection{T}, wait_time::Float64)
 
+# send updates out, this is allowed to block
 send_updates(con::Connection{T}, changes::Dict{Symbol})
 ```
 
@@ -77,6 +84,18 @@ outgoing_update_period(::Connection)
 
 # returns whether there are pending updates
 has_updates(::Connection, ::UpdateType)
+
+# Receive a monitor block, by default just calls base_handle_monitor(con, name, mon)
+handle_monitor(con::Connection, name::Symbol, mon::JSON3.Object) =
+
+# Receive an eval block, by default just calls base_handle_eval(con, name, ev)
+handle_eval(con::Connection, name::Symbol, ev::JSON3.Object)
+
+# Receive a data block, by default just calls base_handle_data(con, name, data)
+handle_data(con::Connection, name::Symbol, data::JSON3.Object) =
+
+# Delete data blocks, by default just calls base_handle_delete(con, data)
+handle_delete(con::Connection, del::JSON3.Object) =
 ```
 """
 module Monitor
@@ -144,10 +163,20 @@ end
 "Run code in the connection thread synchronously"
 function sync(f::Function, con::Connection)
     local result = Channel{Any}()
+    local exception = nothing
     async(con) do
-        put!(result, f())
+        try
+            put!(result, f())
+        catch err
+            exception = err
+            put!(result, nothing)
+            rethrow()
+        end
     end
-    return take!(result)
+    local value = take!(result)
+    exception &&
+        throw(exception)
+    return value
 end
 
 "Run code in the connection thread asynchronously"
@@ -160,18 +189,21 @@ This is used for getting and setting data values.
 """
 function run_connection(con::Connection)
     local failures = 0
+    local failurebase = 1
     while isopen(con.channel)
         try
             take!(con.channel)()
             failures = 0
+            failurebase = 1
         catch err
             check_sigint(err)
             @error "Error processing command: $err" exception = (err, catch_backtrace())
             failures += 1
-            if failures > 3
-                @error "Exiting because there were more than three failures in a row processing commands"
-                shutdown(con)
-                break
+            if failures == 10 ^ failurebase
+                @error "$failures errors in a row"
+                failurebase += 1
+            elseif failures > 3
+                @error "Muting errors because there were more than 3 in a row"
             end
         end
     end
@@ -246,7 +278,6 @@ function refresh(con::Connection; force = :none)
 end
 
 function check_outgoing_updates(con::Connection)
-    local failures = 0
     local sleepcount = 0
     verbose(con, "\nCHECKING UPODATES, SLEEP PERIOD: $(outgoing_update_period(con))\n")
     try
@@ -272,15 +303,9 @@ function check_outgoing_updates(con::Connection)
                     end
                 end
                 !isnothing(err) && throw(err)
-                failures = 0
             catch err
                 check_sigint(err)
                 @error "Error updating" exception = (err, catch_backtrace())
-                failures += 1
-                # three failures in a row disables the connection
-                if failures > 3
-                    shutdown(con)
-                end
             end
         end
     finally
