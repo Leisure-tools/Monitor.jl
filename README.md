@@ -8,12 +8,12 @@ monitor and change data values in subscribing Julia programs.
 
 Monitor.jl supports 4 types of blocks with some of these common properties:
 
+* **`type:`** how a subscriber should interpret the block. Supported types are "monitor", "code", "data", and "delete".  
 * **`name:`** This block’s name; receivers overwrite the previous values for duplicates  
 * **`origin:`** ID of the subscriber that produced this block  
 * **`topics:`** optional topic(s) to publish the block to – transports should route these  
 * **`tags:`** identifies sets of blocks this block “belongs to”. Can be a string or an array of strings; monitor and data blocks can use this to categorize results and also for cleanup  
 * **`targets:`** optional subscriber or list of subscribers that should receive the block (others ignore it)  
-* **`type:`** how a subscriber should interpret the block. Supported types are "monitor", "code", "data", and "delete".  
 
 Block types:  
 
@@ -52,12 +52,43 @@ Block types:
   * **`targets:`** optional list of subscribers that should receive the block (others ignore it)  
   * **`value:`** NAME, [NAME, ...], {"tagged": TAG}, or {"tagged": [TAG, ...]}  
 
-API:
+# Capabilities
+
+Monitor.jl communicates with simple JSON structures called “blocks” to
+
+* Dynamically monitor Juila data, automatically detect when it changes, and report the new values  
+  * You use the connection to make and remove monitors in running programs  
+  * Polls for value changes – optionally specify how often to check values  
+  * Polling means you do **not** need to alter your code to inform the system when a value changes  
+* Modify mutable values  
+* Evaluate code  
+* Exchange data between programs  
+* Treat programs like ”database shards”  
+* Optionally target a subset of subscribers  
+* Communicate via  
+  * Pubsub with REDIS streams  
+  * Named pipes  
+  * Easy to extent with custom transports
+
+Monitor.jl can publish to different topics to
+
+* Evaluate code and select data to monitor  
+* Send updates to monitored values  
+* Control programs for rollups or MapReduce
+
+Connected UIs, like notebooks, can present data blocks in a meaningful way
+
+* Blocks can update in-place  
+* Eval blocks can be sent with a button click  
+* Blocks can appear in sections based on tags  
+* Views can create more monitors and change monitored values
+
+# API:
 
 ```julia
 start(con::Connection; roots::Dict{Symbol,Any}=Dict(), verbosity=0)
 
-queue_update(name, data) -- queue an update to send out
+send(data) -- queue an update to send out
 
 shutdown() -- close the connection
 ```
@@ -67,8 +98,10 @@ ADDING YOUR OWN TRANSPORTS
 You can make your own transport by implementing two required handlers:
 
 ```julia
+# returns updates, an iterator of Symbol=>JSON3.Object, this is allowed to block
 get_updates(con::Connection{T}, wait_time::Float64)
 
+# send updates out, this is allowed to block
 send_updates(con::Connection{T}, changes::Dict{Symbol})
 ```
 
@@ -86,5 +119,16 @@ outgoing_update_period(::Connection)
 
 # returns whether there are pending updates
 has_updates(::Connection, ::UpdateType)
-```
 
+# Receive a monitor block, by default just calls base_handle_monitor(con, name, mon)
+handle_monitor(con::Connection, name::Symbol, mon::JSON3.Object) =
+
+# Receive an eval block, by default just calls base_handle_eval(con, name, ev)
+handle_eval(con::Connection, name::Symbol, ev::JSON3.Object)
+
+# Receive a data block, by default just calls base_handle_data(con, name, data)
+handle_data(con::Connection, name::Symbol, data::JSON3.Object) =
+
+# Delete data blocks, by default just calls base_handle_delete(con, data)
+handle_delete(con::Connection, del::JSON3.Object) =
+```
