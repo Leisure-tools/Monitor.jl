@@ -5,7 +5,40 @@ Listen to and update monitors on Julia.
 Monitor.jl is a pubsub system that communicates with "blocks" (JSON objects) which allow you to
 monitor and change data values in subscribing Julia programs.
 
+![arch](arch.png)
+
 ![screencap](screencap.gif)
+
+# Capabilities
+
+Monitor.jl communicates with simple JSON structures called “blocks” to
+
+* Dynamically monitor Juila data, automatically detect when it changes, and report the new values  
+  * You use the connection to make and remove monitors in running programs  
+  * Polls for value changes – optionally specify how often to check values  
+  * Polling means you do **not** need to alter your code to inform the system when a value changes  
+* Modify mutable values  
+* Evaluate code  
+* Exchange data between programs  
+* Treat programs like ”database shards”  
+* Optionally target a subset of subscribers  
+* Communicate via  
+  * Pubsub with REDIS streams  
+  * Named pipes  
+  * Easy to extent with custom transports
+
+Monitor.jl can publish to different topics to
+
+* Evaluate code and select data to monitor  
+* Send updates to monitored values  
+* Control programs for rollups or MapReduce
+
+Connected UIs, like notebooks, can present data blocks in a meaningful way
+
+* Blocks can update in-place  
+* Eval blocks can be sent with a button click  
+* Blocks can appear in sections based on tags  
+* Views can create more monitors and change monitored values
 
 Monitor.jl supports 4 types of blocks with some of these common properties:
 
@@ -52,37 +85,6 @@ Block types:
   * **`topic:`** optional topic to publish the block to, when it’s not the default  
   * **`targets:`** optional list of subscribers that should receive the block (others ignore it)  
   * **`value:`** NAME, [NAME, ...], {"tagged": TAG}, or {"tagged": [TAG, ...]}  
-
-# Capabilities
-
-Monitor.jl communicates with simple JSON structures called “blocks” to
-
-* Dynamically monitor Juila data, automatically detect when it changes, and report the new values  
-  * You use the connection to make and remove monitors in running programs  
-  * Polls for value changes – optionally specify how often to check values  
-  * Polling means you do **not** need to alter your code to inform the system when a value changes  
-* Modify mutable values  
-* Evaluate code  
-* Exchange data between programs  
-* Treat programs like ”database shards”  
-* Optionally target a subset of subscribers  
-* Communicate via  
-  * Pubsub with REDIS streams  
-  * Named pipes  
-  * Easy to extent with custom transports
-
-Monitor.jl can publish to different topics to
-
-* Evaluate code and select data to monitor  
-* Send updates to monitored values  
-* Control programs for rollups or MapReduce
-
-Connected UIs, like notebooks, can present data blocks in a meaningful way
-
-* Blocks can update in-place  
-* Eval blocks can be sent with a button click  
-* Blocks can appear in sections based on tags  
-* Views can create more monitors and change monitored values
 
 # API:
 
