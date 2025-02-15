@@ -60,6 +60,7 @@ Block types:
   * **`updateTargets:`** controls which programs receive updates  
   * **`tags:`** identifyies a set of blocks. Can be a string or an array of strings  
   * **`root:`** root value for the variables  
+  * **`quiet:`** while true, monitor but don't publish updates  
   * **`value:`** variables that monitor values  
       Initial values are not placed into Julia but incoming changes are not placed into Julia data  
 
