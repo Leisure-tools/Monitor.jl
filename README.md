@@ -135,3 +135,5 @@ handle_data(con::Connection, name::Symbol, data::JSON3.Object) =
 # Delete data blocks, by default just calls base_handle_delete(con, data)
 handle_delete(con::Connection, del::JSON3.Object) =
 ```
+
+Simple JSON (and YAML) [file monitoring](https://github.com/Leisure-tools/monitor)
