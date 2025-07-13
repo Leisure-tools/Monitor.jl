@@ -1,6 +1,6 @@
 Base.exit_on_sigint(false)
 
-using Monitor: start, check_sigint
+using Monitor: start, check_sigint, current_connection, Monitor
 
 include("pipey.jl")
 

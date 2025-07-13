@@ -1,4 +1,6 @@
 #!/bin/sh
+VERBOSE=false
+
 while true; do
     case "$1" in
         --from)
@@ -6,6 +8,9 @@ while true; do
             ;;
         --loop)
             LOOP=true
+            ;;
+        -v)
+            VERBOSE=true
             ;;
         *)
             if expr "$2" : "^[^-]*-0$" > /dev/null; then
@@ -32,8 +37,11 @@ if [ "$LOOP" = true ]; then
         sleeptime="$(expr "$sleeptime" + 1)"
     fi
     while true; do
+        if [ "$VERBOSE" = true ]; then
+            echo TRIM
+        fi
         min="$(expr $(date +%s%3N) - "$2")-0"
-        redis-cli xtrim "$1" minid '~' "$min"
+        redis-cli xtrim "$1" minid '~' "$min" > /dev/null
         sleep $sleeptime
     done
     exit
@@ -52,4 +60,4 @@ else
     min="$(expr $(date +%s%3N) - "$2")-0"
 fi
 
-redis-cli xtrim "$1" minid '~' "$min"
+redis-cli xtrim "$1" minid '~' "$min" > /dev/null

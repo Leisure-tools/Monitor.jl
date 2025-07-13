@@ -1,7 +1,16 @@
+name = "RedisMonitor"
+uuid = "a804cf43-200c-4ab9-a383-73c36b0e3e1a"
+authors = ["Bill Burdick <bill.burdick@gmail.com>"]
+version = "0.1.0"
+
 [deps]
-Monitor = "6f9f2883-8618-4668-b432-259098b587ed"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+Monitor = "6f9f2883-8618-4668-b432-259098b587ed"
+OrderedCollections = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
 Redis = "0cf705f9-a9e2-50d1-a699-2b372a39b750"
 
 [sources]
 Monitor = {path = "../.."}
+
+[compat]
+OrderedCollections = "1.8.1"

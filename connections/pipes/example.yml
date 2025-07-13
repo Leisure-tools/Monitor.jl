@@ -2,5 +2,5 @@ person1:
   type: monitor
   root: Main.current_person
   value:
-    name: Todd
-    number: "12"
+    name: Herman
+    number: "1313"

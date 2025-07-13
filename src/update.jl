@@ -3,7 +3,7 @@ function opt(mon::JSON3.Object, keysym::Symbol)
     local key = ":$keysym"
     for (i, v) in enumerate(opts)
         v != key && continue
-        i < length(opts) && !startswith(opts[i+1], ":") && return opts[i+1]
+        i < length(opts) && !startswith(opts[i + 1], ":") && return opts[i + 1]
         break
     end
     return nothing
@@ -17,7 +17,7 @@ function monitor_from(con::Connection, name::Symbol, mon::JSON3.Object)
 
     if new
         root = Var(con.env, "root?path=$rootpath")
-        cur = MonitorData(; rootpath, name, data = mon, update, root)
+        cur = MonitorData(; rootpath, name, data=mon, update, root)
         con.monitors[name] = cur
     else
         cur.update = update
@@ -41,7 +41,7 @@ end
 find_monitor_vars(::Connection, name::Symbol, ::MonitorData, val) =
     error("Bad monitor object named $name: $val")
 
-find_monitor_vars(::Connection, ::Symbol, ::MonitorData, ::Nothing) = Pair{String,Symbol}[]
+find_monitor_vars(::Connection, ::Symbol, ::MonitorData, ::Nothing) = Pair{String, Symbol}[]
 
 function find_monitor_vars(
     con::Connection,
@@ -51,7 +51,7 @@ function find_monitor_vars(
     mon::JSON3.Object,
 )
     local val = mon.value
-    local new_data_keys = Pair{Symbol,Symbol}[]
+    local new_data_keys = Pair{Symbol, String}[]
     local old_vars = Set{Symbol}()
     local disabled = get(mon, :disabled, false)
 
@@ -61,16 +61,16 @@ function find_monitor_vars(
             local k = string(ksym)
             local m = match(VAR_NAME, k)
             isnothing(m) && error("Bad monitor variable in $name: $k")
-            local name = Symbol(m[1])
-            push!(old_vars, name)
-            push!(new_data_keys, ksym => name)
-            local metastr = something(m[2], "path=$name")
+            local var_name = Symbol(m[1])
+            push!(old_vars, var_name)
+            push!(new_data_keys, ksym => k)
+            local metastr = something(m[2], "path=$(m[1])$(something(m[3], ""))")
             local meta = parsemetadata(metastr)
             if !haskey(meta, :path)
-                meta[:path] = name
+                meta[:path] = var_name
             end
-            if haskey(cur.vars, name)
-                local var = cur.vars[name]
+            if haskey(cur.vars, var_name)
+                local var = cur.vars[var_name]
                 var.metadata == meta && continue
                 # metadata changed
                 if var.metadata[:path] != meta[:path]
@@ -78,10 +78,10 @@ function find_monitor_vars(
                 end
                 var.metadata = meta
             else
-                local var = Var(con.env, name; id = NO_ID, parent = cur.root.id)
+                local var = Var(con.env, var_name; id=NO_ID, parent=cur.root.id, fullname=k)
                 var.metadata = meta
                 var.path = parsepath(meta[:path])
-                verbose(con, "MADE NEW VAR $name")
+                verbose(con, "MADE NEW VAR $var_name($(var.id))")
                 cur.vars[var.name] = var
             end
         end
@@ -100,19 +100,20 @@ function find_monitor_vars(
     return new_data_keys
 end
 
-function handle_update(
+function handle_incoming_block(
     con::Connection,
     name::Symbol,
     update::JSON3.Object,
     updated::Set{Symbol},
 )
-    if update.type == "monitor"
+    if update.type ∈ ("monitor", "data") && update == get(con.data_blocks, name, nothing)
+        delete!(updated, name)
+        verbose(con, "IGNORING REDUNDANT MONITOR '$name'", update)
+    elseif update.type == "monitor"
         verbose(con, "RECEIVED MONITOR '$name'", update)
-        if handle_monitor(con, name, update)
-            push!(updated, name)
-        end
-    elseif update.type == "eval"
-        handle_eval(con, name, update)
+        handle_monitor(con, name, update)
+    elseif update.type == "code"
+        handle_code(con, name, update)
     elseif update.type == "data"
         handle_data(con, name, update)
     end
@@ -127,8 +128,7 @@ function base_handle_data(con::Connection, name::Symbol, data::JSON3.Object)
 end
 
 # Delete data blocks, by default just calls base_handle_delete(con, del)
-handle_delete(con::Connection, del::JSON3.Object) =
-    base_handle_delete(con, del)
+handle_delete(con::Connection, del::JSON3.Object) = base_handle_delete(con, del)
 
 function base_handle_delete(con::Connection, del::JSON3.Object)
     local names = if del.value isa String
@@ -151,7 +151,7 @@ function base_handle_monitor(con::Connection, name::Symbol, mon::JSON3.Object)
     verbose(con, "GOT MONITOR: ", mon)
     local missing = filter(∉(keys(mon)), (:root, :value))
     if !isempty(missing)
-        @warn "Bad monitor object, missing these keys: $missing"
+        @warn "Bad monitor object, missing these keys: $missing" mon
         return false
     end
     local new, root, cur = monitor_from(con, name, mon)
@@ -159,21 +159,29 @@ function base_handle_monitor(con::Connection, name::Symbol, mon::JSON3.Object)
     local new_data_keys = find_monitor_vars(con, new, name, cur, mon)
 
     cur.rootpath = mon.root
-    cur.data = JSON3.read(JSON3.write(val), Dict{Symbol,Any})
+    cur.data = JSON3.read(JSON3.write(val), Dict{Symbol, Any})
     cur.data_keys = new_data_keys
     cur.root = root
     con.env.vars[cur.root.id] = root
     # set data from incoming monitor
     if new
-        verbose(con, "New monitor, env changed: ", con.env.changed)
+        if !cur.disabled
+            # add monitor variable changes from env so they get sent out
+            for (_, var) in cur.vars
+                haskey(con.env.vars, var.id) &&
+                    push!(con.env.changed, var.id)
+            end
+        end
     elseif !isempty(new_data_keys) && !cur.disabled
-        refresh(con.env, (root,); track = false)
-        #for v in Set(con.env.changed)
-        #    local var = con.env.vars[v]
-        #    if is_same(get(cur.data, var.name, nothing), var.json_value)
-        #        delete!(con.env.changed, v)
-        #    end
-        #end
+        # remove monitor variable changes from env so they don't get sent out
+        for (jsym, vfullname) in new_data_keys
+            json = get(cur.data, jsym, nothing)
+            var = con.env.varfullnames[vfullname]
+            if !is_same(json, var.json_value)
+                safe_set(con, cur, var, json)
+            end
+            delete!(con.env.changed, var.id)
+        end
         verbose(
             con,
             "MONITOR ROOT: ",
@@ -183,51 +191,42 @@ function base_handle_monitor(con::Connection, name::Symbol, mon::JSON3.Object)
             "\n  VALUE: ",
             root.internal_value,
         )
-        #println("VALUE: $(cur.data)")
-        # plug values from data into Julia objects
-        for (str, name) in new_data_keys
-            local var = cur.vars[name]
-            if !is_same(get(cur.data, var.name, nothing), var.json_value)
-                safe_set(con, cur, var, cur.data[str])
-                delete!(con.env.changed, var.id)
-            end
-        end
     end
-    return true
 end
 
-# Receive an eval block, by default just calls base_handle_eval(con, name, ev)
-handle_eval(con::Connection, name::Symbol, ev::JSON3.Object) =
-    base_handle_eval(con, name, ev)
+# Receive a code block, by default just calls base_handle_code(con, name, ev)
+handle_code(con::Connection, name::Symbol, ev::JSON3.Object) =
+    base_handle_code(con, name, ev)
 
-function base_handle_eval(con::Connection, name::Symbol, ev::JSON3.Object)
+function base_handle_code(con::Connection, name::Symbol, ev::JSON3.Object)
     local str = get(ev, :value, "")
     if !(str isa String)
-        @error "Bad value type for eval, expecting string but got: $(typeof(str))"
-        return
+        @error "Bad value type for code, expecting string but got: $(typeof(str))"
+        return nothing
     end
     if !isempty(str)
         try
-            Main.eval(Meta.parse(str))
+            Main.eval(Meta.parse("begin " * str * " end"))
         catch err
             check_sigint(err)
-            @error "Error evaluationg block: $err" exception = (err, catch_backtrace())
+            @error "Error evaluating block: $err" exception = (err, catch_backtrace())
         end
     end
 end
 
 function safe_set(con::Connection, mon::MonitorData, var::Var, value)
     try
-        verbose(con, "SETTING VAR $(var.name) PATH $(var.path)")
+        verbose(con, "SETTING VAR ", var.name, " PATH ", var.path, " TO ", value)
         set_value(con.env, var, deref(con.env, value))
     catch err
         check_sigint(err)
-        @error "Error setting value in monitor $(mon.name) for variable $(var.name)" exception =
-            (err, catch_backtrace())
+        @error "Error setting value in monitor $(mon.name) for variable $(var.name)" exception = (
+            err, catch_backtrace()
+        )
     end
 end
 
-function find_outgoing_updates(con::Connection; force = :none)
+function find_outgoing_updates(con::Connection; force=:none)
     local t = time()
     local check = Set{Int}()
     local monitors = Set{Symbol}()
@@ -238,18 +237,18 @@ function find_outgoing_updates(con::Connection; force = :none)
     else
         (_) -> false
     end
-    for (_, mon) in con.monitors
+    for (_, mon::MonitorData) in con.monitors
         !force_update(mon) &&
             t - (con.lastcheck ÷ mon.update) * mon.update < mon.update &&
             continue
         !isempty(mon.vars) && push!(check, (v.id for (_, v) in mon.vars)...)
         push!(check, mon.root.id)
-        push!(monitors, mon.name)
+        # don't publish quiet monitors
+        !mon.quiet &&
+            push!(monitors, mon.name)
     end
     con.lastcheck = t
     local checked = Set{Int}()
-    empty!(con.env.changed)
-    empty!(con.env.errors)
     # refresh parents first
     for v in check
         v ∈ checked && continue
@@ -265,13 +264,18 @@ function find_outgoing_updates(con::Connection; force = :none)
             push!(checked, a.id)
         end
     end
-    for (_, mon) in con.monitors
-        if haschanges(con, mon)
-            verbose(con, "Queuing monitor update for ", mon.name, ": ", compute_data(mon))
-            send(con, mon.name, compute_data(mon))
+    send_changes(con, (con.monitors[name] for name in monitors))
+end
+
+function send_changes(con::Connection, monitors=values(con.monitors))
+    for mon in monitors
+        if !mon.disabled && haschanges(con, mon)
+            verbose(con, "Queuing monitor update for ", mon.name, ": ", compute_data(con, mon))
+            send(con, mon.name, compute_data(con, mon))
         end
     end
     empty!(con.env.changed)
+    empty!(con.env.errors)
 end
 
 function outgoing_update_period(con::Connection)
@@ -283,9 +287,11 @@ function outgoing_update_period(con::Connection)
 end
 
 function haschanges(con::Connection, mon::MonitorData)
-    return !isnothing(findfirst(mon.vars) do v
-        return v.id ∈ con.env.changed
-    end)
+    return !isnothing(
+        findfirst(mon.vars) do v
+            return v.id ∈ con.env.changed
+        end,
+    )
 end
 
 function namefor(var::Var, name::String)
@@ -295,24 +301,21 @@ function namefor(var::Var, name::String)
     end
     local vm = Dict(var.metadata)
     delete!(vm, :type)
-    return Symbol(vm == parsemetadata(meta) ? vn : name)
+    return Symbol(vm == parsemetadata(meta) ? vn : clean(name))
 end
 
+clean(name) = endswith(name, "()") ? name[1:(end - 2)] : name
+
 # compute data for changed variables
-function compute_data(mon::MonitorData)
-    for (_, varname) in mon.data_keys
-        local var = mon.vars[varname]
-        mon.data[varname] = var.json_value
+function compute_data(con::Connection, mon::MonitorData)
+    for (key, fullname) in mon.data_keys
+        local var = con.env.varfullnames[fullname]
+        mon.data[key] = var.json_value
     end
     # maintain order
     return (;
-        type = "monitor",
-        root = mon.rootpath,
-        value = (;
-            (
-                namefor(mon.vars[name], string(str)) => mon.data[name] for
-                (str, name) in mon.data_keys
-            )...
-        ),
+        type="monitor",
+        root=mon.rootpath,
+        value=OrderedDict(name => mon.data[name] for (name,) in mon.data_keys),
     )
 end

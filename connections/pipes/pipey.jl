@@ -25,7 +25,7 @@ function get_updates(con::Connection{PipeCon}, ::Float64)
     return JSON3.read(JSON3.write(changes))
 end
 
-function send_updates(con::Connection{PipeCon}, outgoing::Dict)
+function send_updates(con::Connection{PipeCon}, outgoing::OrderedDict)
     @spawn begin
         verbose(con, "PIPEY SENDING UPDATES: $(outgoing)")
         #local output = open(con.data.output_pipe_name, "w")

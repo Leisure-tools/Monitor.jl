@@ -1,0 +1,71 @@
+#!/bin/sh
+SRC=$(realpath "$0")
+DIR=$(dirname "$SRC")
+
+if [ $# != 2 ]; then
+   echo 1>&2 usage: $(basename "$SRC") FILE STREAM
+   exit 1
+fi
+
+FILE="$(realpath "$1")"
+STREAM="$2"
+TMPDIR=$(mktemp -d)
+SCRATCH="$TMPDIR/scratch"
+SCRATCHTEST="$TMPDIR/scratchtest"
+SCRATCH2="$TMPDIR/scratch2"
+FILETEST="$TMPDIR/filetest"
+touch "$FILETEST"
+touch "$SCRATCH"
+touch "$SCRATCHTEST"
+
+filemod() {
+    stat -c %Y "$FILE"
+}
+
+waitforfilechange() {
+    if [ "$2" -nt "$1" ]; then
+        evt=$(inotifywait -qq -e close_write -e moved_from -e move -e move_self -e delete_self "$1")
+        echo EVENT "$1" "$evt"
+        touch "$2"
+    fi
+}
+
+monitorfile() {
+    while true; do
+        waitforfilechange "$FILE" "$FILETEST"
+        echo WRITING OUTPUT
+        redis-cli xadd "$STREAM" '*' batch "$(yq -o=json -I=0 . < "$FILE")"
+        touch "$FILETEST"
+    done
+}
+
+monitor() {
+    while true; do
+        yq -P < "$IN" > "$SCRATCH"
+        touch "$FILETEST"
+        mv "$SCRATCH" "$FILE"
+        echo GOT INPUT "$(cat "$FILE")"
+    done
+}
+
+monitor&
+MONITORPID="$!"
+monitorfile&
+MONITORFILEPID="$!"
+
+die() {
+    echo EXITING MONITOR
+    kill $MONITORPID
+    kill $MONITORFILEPID
+    echo REMOVING TMP DIR $TMPDIR
+    rm -rf $TMPDIR
+}
+
+trap die EXIT
+trap exit INT TERM
+
+echo SENDING $"FILE" to "$OUT"
+redis-cli xadd "$STREAM" '*' batch "$(yq -o=json -I=0 . < "$FILE")"
+wait
+die
+echo EXIT MONITOR

@@ -7,6 +7,6 @@ if [ $# != 2 ]; then
    echo 1>&2 Usage: $(basename "$0") INPUTPIPE OUTPUTPIPE
    exit 1
 fi
-VERBOSITY=0
+VERBOSITY=1
 
 exec julia -i -e 'println("STARTING PIPEY"); using Revise, Pkg; Pkg.activate("'"$dir"'"); include(popfirst!(ARGS)); con=test(; verbosity='$VERBOSITY'); println("Connection is stored in `con`")' "$dir/pipeymain.jl" "$@"

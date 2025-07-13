@@ -1,0 +1,11 @@
+code1:
+  name: code1
+  type: code
+  value: println("Hello there")
+person1:
+  name: person1
+  root: Main.current_person
+  type: monitor
+  value:
+    name: Herman 2
+    number: "1313"

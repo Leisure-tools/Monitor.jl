@@ -4,17 +4,15 @@ const REF = r"^\?([0-9]+)$"
 const LOCAL_ID = r"^@/([0-9]+)$"
 const UNKNOWN = "?"
 #const PATH_COMPONENT = r"^([-[:alnum:]]+|@)/([0-9]+)$"
-const VAR_NAME =
-    r"^([0-9]+|\pL\p{Xan}*)(?:\?((\pL\p{Xan}*)(?:=((?:[^,]|\\,)*))?(?:,(\pL\p{Xan}*)(?:=((?:[^,]|\\,)*))?)*))?$"
-const METAPROP = r"(\pL\p{Xan}*)(?:=((?:[^,]|\\,)*))?(,|$)"
+# groups 1: var name, 2: metadata, 3: optional parens (if no metadata)
+const VAR_NAME = r"^([0-9]+|\pL[\p{Xan}_!.]*)(?:\?((?:\pL[\p{Xan}_!]*)(?:=(?:(?:[^,]|\\,)*))?(?:,(?:\pL[\p{Xan}_!]*)(?:=(?:(?:[^,]|\\,)*))?)*)|(\(\)))?$"
+const METAPROP = r"(\pL[\p{Xan}_!]*)(?:=((?:[^,]|\\,)*))?(,|$)"
 const ARRAY_INDEX = r"[1-9][0-9]*"
 const QUALIFIED_NAME = r"^[^.]+\.[^.]+$"
 
-const PATH_COMPONENT =
-    r"(@?[\p{LC}\p{Lm}\p{Lo}\p{Nl}\p{No}\p{Sc}\p{So}_][\p{LC}\p{Lm}\p{Lo}\p{Nl}\p{No}\p{Sc}\p{So}_!\p{Nd}\p{No}\p{Mn}\p{Mc}\p{Me}\p{Sk}\p{Pc}]*|\[[1-9][0-9]*\]|\(\)|\.)\s*"
+const PATH_COMPONENT = r"(@?[\p{LC}\p{Lm}\p{Lo}\p{Nl}\p{No}\p{Sc}\p{So}_][\p{LC}\p{Lm}\p{Lo}\p{Nl}\p{No}\p{Sc}\p{So}_!\p{Nd}\p{No}\p{Mn}\p{Mc}\p{Me}\p{Sk}\p{Pc}]*|\[[1-9][0-9]*\]|\(\)|\.)\s*"
 
-const JPATH_COMPONENT =
-    r"(@?[\p{LC}\p{Lm}\p{Lo}\p{Nl}\p{Sc}\p{So}_][\p{LC}\p{Lm}\p{Lo}\p{Nl}\p{Sc}\p{So}_!\p{Nd}\p{No}\p{Mn}\p{Mc}\p{Me}\p{Sk}\p{Pc}]*|[1-9][0-9]*)(?:((?:\.[\p{LC}\p{Lm}\p{Lo}\p{Nl}\p{Sc}\p{So}_][\p{LC}\p{Lm}\p{Lo}\p{Nl}\p{Sc}\p{So}_!\p{Nd}\p{No}\p{Mn}\p{Mc}\p{Me}\p{Sk}\p{Pc}]*)*)(?:\(\))?)?"
+const JPATH_COMPONENT = r"(@?[\p{LC}\p{Lm}\p{Lo}\p{Nl}\p{Sc}\p{So}_][\p{LC}\p{Lm}\p{Lo}\p{Nl}\p{Sc}\p{So}_!\p{Nd}\p{No}\p{Mn}\p{Mc}\p{Me}\p{Sk}\p{Pc}]*|[1-9][0-9]*)(?:((?:\.[\p{LC}\p{Lm}\p{Lo}\p{Nl}\p{Sc}\p{So}_][\p{LC}\p{Lm}\p{Lo}\p{Nl}\p{Sc}\p{So}_!\p{Nd}\p{No}\p{Mn}\p{Mc}\p{Me}\p{Sk}\p{Pc}]*)*)(?:\(\))?)?"
 
 verbosity(::VarEnv) = 0
 
@@ -39,7 +37,20 @@ function oid(env::VarEnv, obj)
 end
 
 ref(env::VarEnv, obj) =
-    env.verbose_oids ? (; ref = oid(env, obj), repr = repr(obj)) : (; ref = oid(env, obj))
+    env.verbose_oids ? (; ref=oid(env, obj), repr=repr(obj)) : (; ref=oid(env, obj))
+
+function parent(ctx::VarCtx)
+    v = parent(ctx.env, ctx.var)
+    isnothing(v) &&
+        return nothing
+    return VarCtx(ctx.env, v)
+end
+
+function parent(env::VarEnv, var::Var)
+    var.parent == NO_ID &&
+        return nothing
+    return env.vars[var.parent]
+end
 
 function walk(env::VarEnv, data, level)
     if data isa AbstractString || data isa Symbol
@@ -103,14 +114,14 @@ function basic_deref(env::VarEnv, obj)
     return obj
 end
 
-function parsemetadata(meta::AbstractString, original_meta = Dict{Symbol,String}())
-    metadata = Dict{Symbol,String}(original_meta)
+function parsemetadata(meta::AbstractString, original_meta=Dict{Symbol, String}())
+    metadata = Dict{Symbol, String}(original_meta)
     while meta !== ""
         (m = match(METAPROP, meta)) === nothing && throw("Bad metaproperty format: $(meta)")
         metadata[Symbol(m[1])] = m[2] === nothing ? "" : string(m[2])
         length(meta) == length(m.match) && break
         meta[length(m.match)] != ',' && throw("Bad metaproperty format: $(meta)")
-        meta = meta[length(m.match)+1:end]
+        meta = meta[(length(m.match) + 1):end]
     end
     @debug("USING METADATA: $(repr(metadata))")
     metadata
@@ -137,8 +148,8 @@ function parsepath(pathstr::AbstractString)
     for m in @views matches[start:end]
         local frag = @views(rest[1:length(m.match)])
         frag != m.match && error("Bad match, '$frag' != '$(m.match)'")
-        rest = strip(@views rest[length(m.match)+1:end])
-        if length(frag) > 2 && frag[end-1:end] == "()"
+        rest = strip(@views rest[(length(m.match) + 1):end])
+        if length(frag) > 2 && frag[(end - 1):end] == "()"
             local modpath = m[1] * m[2]
             try
                 # this eval finds the function with name modpath
@@ -175,36 +186,40 @@ potential metadata: create, access, path
 """
 Var(
     env::VarEnv,
-    name::Union{Symbol,AbstractString} = "";
-    id::Int = NO_ID,
-    level = 0,
-    value = nothing,
+    name::Union{Symbol, AbstractString}="";
+    id::Int=NO_ID,
+    level=0,
+    value=nothing,
+    fullname=string(name),
+    json_value=nothing,
+    metadata::Dict{Symbol, String}=Dict{Symbol, String}(),
     kw...,
-) = basicvar(env, id, name; level, value, kw...)
+) = basicvar(env, id, name; level, value, fullname, json_value, metadata, kw...)
 
 "Basic variable creation"
 function basicvar(
     env::VarEnv{T},
-    id::Int = NO_ID,
-    name::Union{Symbol,AbstractString} = "";
-    level = 0,
-    value = nothing,
-    json_value = nothing,
-    metadata::Dict{Symbol,String} = Dict{Symbol,String}(),
+    id::Int=NO_ID,
+    name::Union{Symbol, AbstractString}="";
+    level=0,
+    value=nothing,
+    json_value=nothing,
+    metadata::Dict{Symbol, String}=Dict{Symbol, String}(),
+    fullname=string(name),
     kw...,
 ) where {T}
     args = (; value, kw...)
     if !isnothing(value) && !haskey(args, :internal_value)
-        args = (; args..., internal_value = args.value)
+        args = (; args..., internal_value=args.value)
     end
-    if string(name) != ""
-        m = match(VAR_NAME, string(name))
+    if fullname != ""
+        m = match(VAR_NAME, fullname)
         if m !== nothing && m[2] !== nothing
             name = m[1]
             metadata = parsemetadata(m[2], metadata)
             #println("METADATA: ", metadata)
             if haskey(metadata, :path) && !haskey(args, :path)
-                args = (; args..., path = parsepath(metadata[:path]))
+                args = (; args..., path=parsepath(metadata[:path]))
             end
             if level == 0 && haskey(metadata, :level)
                 level = parse(Int, metadata[:level])
@@ -222,14 +237,15 @@ function basicvar(
     if id == NO_ID
         id = env.curvid += 1
     end
-    v = Var{T}(; args..., id, name = name isa Number ? Symbol("") : name)
+    v = Var{T}(; args..., id, name=name isa Number ? Symbol("") : name, fullname)
     !isnothing(v.internal_value) && use_value(env, v, v.internal_value)
     v.metadata[:type] = typename(v.internal_value)
     if isnothing(json_value)
         v.json_value = json_value
     end
     env.vars[id] = v
-    push!(env.changed, v.id)
+    env.varnames[v.name] = v
+    env.varfullnames[fullname] = v
     if v.parent !== NO_ID && name != Symbol("")
         env.vars[v.parent].children[name] = v
         @debug("ADDED CHILD OF $(v.parent) NAMED $(name) = $v")
@@ -261,8 +277,8 @@ function set_type(ctx::VarCtx)
     end
 end
 
-dicty(::Union{AbstractDict,NamedTuple}) = true
-dicty(::T) where {T} = hasmethod(haskey, Tuple{T,Symbol}) && hasmethod(get, Tuple{T,Symbol})
+dicty(::Union{AbstractDict, NamedTuple}) = true
+dicty(::T) where {T} = hasmethod(haskey, Tuple{T, Symbol}) && hasmethod(get, Tuple{T, Symbol})
 
 get_path(ctx::VarCtx, path) = get_path(ctx.env, ctx.var, path)
 
@@ -282,7 +298,7 @@ function basic_get_path(env::VarEnv{T}, var::Var, path) where {T}
             for _ = 2:length(string(el))
                 var = env.vars[var.parent]
                 var.parent == NO_ID && throw(
-                    VarException(:path, env, var, "error going up in path with no parent"),
+                    VarException(:path, env, var, "error going up in path with no parent")
                 )
             end
             env.vars[var.parent].internal_value
@@ -313,8 +329,9 @@ function basic_get_path(env::VarEnv{T}, var::Var, path) where {T}
                 end
             catch err
                 check_sigint(err)
-                @error "error getting $var field $el in path $path" exception =
-                    (err, catch_backtrace())
+                @error "error getting $var field $el in path $path" exception = (
+                    err, catch_backtrace()
+                )
                 exc(:path, "error getting $var field $el in path $path", err)
             end
         elseif el isa Number
@@ -349,25 +366,28 @@ function basic_get_path(env::VarEnv{T}, var::Var, path) where {T}
     cur
 end
 
-set_value(env::VarEnv, var::Var, value; creating = false) =
+set_value(env::VarEnv, var::Var, value; creating=false) =
     set_value(VarCtx(env, var), value; creating)
 
-set_value(ctx::VarCtx, value; creating = false) =
+set_value(ctx::VarCtx, value; creating=false) =
     invokelatest(basic_set_value, ctx, value; creating)
 
-function basic_set_value(ctx::VarCtx, value; creating = false)
+function basic_set_value(ctx::VarCtx, value; creating=false)
     local env = ctx.env
     local var = ctx.var
-    exc(type, msg, err = NoCause) = throw(VarException(type, ctx, msg, err))
+    exc(type, msg, err=NoCause) = throw(VarException(type, ctx, msg, err))
     creating &&
         (haskey(var.metadata, :create) || var.action || !isempty(var.path)) &&
-        return
+        return nothing
     !var.writeable &&
         throw(VarException(:writeable_error, env, var, "variable $var is not writeable"))
-    cur = get_path(env, var, var.path[1:end-1])
-    isnothing(cur) && return
+    cur = get_path(env, var, var.path[1:(end - 1)])
+    println("CUR VALUE: $cur")
+    isnothing(cur) && verbose(env, "No holder for variable ", var)
+    isnothing(cur) && return nothing
     el = var.path[end]
     value = var.value_conversion(value)
+    verbose(env, "Setting ", cur, ".", el, " to ", value)
     if el isa Tuple
         try
             local mod = getfield(Main, el[1])
@@ -385,7 +405,7 @@ function basic_set_value(ctx::VarCtx, value; creating = false)
                     )
                 end
             end
-            mod.eval(:(v-> $var = v))(value)
+            mod.eval(:(v -> $var = v))(value)
         catch err
             check_sigint(err)
             exc(:program, "error setting field $el in path $(var.path) for $var")
@@ -407,6 +427,7 @@ function basic_set_value(ctx::VarCtx, value; creating = false)
                     )
                 end
             end
+            verbose(env, "Setting value of ", var, " (", cur, ") to ", value)
             setproperty!(cur, el, value)
         catch err
             check_sigint(err)
@@ -498,7 +519,7 @@ function use_value(ctx::VarCtx, value)
     set_type(ctx)
 end
 
-function is_same(a, b, seen = Set())
+function is_same(a, b, seen=Set())
     ismutable(a) && a ∈ seen && return true
     local atype = typeof(a)
     local btype = typeof(b)
@@ -553,19 +574,33 @@ function compute_value(ctx::VarCtx)
     return !is_same(old, var.internal_value)
 end
 
-function refresh(env::VarEnv, vars = values(env.vars); throw = false, track = true)
-    track && empty!(env.changed)
-    track && empty!(env.errors)
-    for var in vars
+"Refresh variables that have not changed, marking them changed if they have new values"
+function refresh(env::VarEnv, vars=values(env.vars); throw=false, track=true)
+    v = [v for v in vars]
+    seen = Set{Int}()
+    i = 0
+    # find parents
+    while i < length(v)
+        i += 1
+        var = v[i]
+        if var.id ∉ seen
+            p = parent(env, var)
+            !isnothing(p) &&
+                push!(v, p)
+        end
+    end
+    # refresh parents and then children
+    for i in length(v):-1:1
+        var = v[i]
         refresh(env, var; throw, track)
     end
 end
 
-function refresh(env::VarEnv, var::Var; throw = false, track = true)
-    var.id ∈ env.changed && return
+"Refresh variable if it has not changed, marking it changed if it has a new value"
+function refresh(env::VarEnv, var::Var; throw=false, track=true)
+    var.id ∈ env.changed && return nothing
     try
         if compute_value(env, var) && track
-            #println("CHANGED VAR $(var.name): ", var.json_value)
             push!(env.changed, var.id)
         end
     catch err

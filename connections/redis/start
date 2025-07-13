@@ -3,9 +3,16 @@
 # Run redis
 # trim all streams every PERIOD seconds
 
+if [ $# != 2 ]; then
+    echo usage: $(basename "$0") CACHEDIR STREAM
+    exit 1
+fi
 DIR=$(dirname "$(realpath "$0")")
+CACHEDIR="$(realpath "${1:-$DIR}")"
+mkdir -p "$CACHEDIR"
 #PERIOD=120
 PERIOD=15
+VERBOSITY=1
 
 trimall() {
     while true; do
@@ -18,13 +25,19 @@ trimall() {
 }
 
 die() {
-    rm -f "$DIR/dump.rdb"
+    rm -f "$CACHEDIR/dump.rdb"
     echo EXITING
-    kill $1
+    kill $*
+    redis-cli shutdown
 }
 
 (sleep 5; trimall)&
-trap "die $!" EXIT
+TRIM=$!
+cd "$CACHEDIR"
+redis-server 2>&1 > "$CACHEDIR/redis.log" &
+trap "die $TRIM" EXIT
 trap exit INT TERM
-cd "$DIR"
-redis-server
+sleep 1
+STREAM=$2
+shift 2
+julia -i -e 'println("STARTING REDIS LISTENER"); using Revise, Pkg; Pkg.activate("'"$DIR"'"); include(popfirst!(ARGS)); con=test("'$STREAM'", "'$STREAM'"; verbosity='$VERBOSITY'); println("Connection is stored in `con`")' "$DIR/redismain.jl" "$@"

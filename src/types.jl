@@ -1,6 +1,6 @@
 const NO_ID = -1
-const PathComponent = Union{Number,Symbol,Function,Tuple{Symbol,Symbol}}
-const JsonType = Union{JSON3.Object,JSON3.Array,String,Float64,Int64,Bool,Nothing}
+const PathComponent = Union{Number, Symbol, Function, Tuple{Symbol, Symbol}}
+const JsonType = Union{JSON3.Object, JSON3.Array, String, Float64, Int64, Bool, Nothing}
 
 """
     Var
@@ -13,10 +13,11 @@ A variable:
     parent::Int = NO_ID
     id::Int = NO_ID
     name::Symbol
+    fullname::String
     value::Any = nothing
-    metadata::Dict{Symbol,AbstractString} = Dict()
-    children::Dict{Symbol,Var} = Dict()
-    properties::Dict{Symbol,Any} = Dict() # misc properties of any type
+    metadata::Dict{Symbol, AbstractString} = Dict()
+    children::Dict{Symbol, Var} = Dict()
+    properties::Dict{Symbol, Any} = Dict() # misc properties of any type
     active = true # monitors refreshing
     internal_value = nothing
     readable::Bool = true
@@ -31,19 +32,29 @@ A variable:
     value_conversion = identity
 end
 
+"""
+    vars: variables keyed by their ID
+    varnames: variables keyed by their names
+    varfullnames: variables keyed by their full names
+    changed: the variables which were changed during a refresh
+"""
 @kwdef mutable struct VarEnv{T}
-    vars::Dict{Int,Var{T}} = Dict{Int,Var{T}}()
-    roots::Dict{Symbol,Any} = Dict{Symbol,Any}()
-    oids::Dict{Int,WeakRef} = Dict{Int,WeakRef}()
-    objoids::WeakKeyDict{Any,Int} = WeakKeyDict{Any,Int}()
+    vars::Dict{Int, Var{T}} = Dict{Int, Var{T}}()
+    varnames::Dict{Symbol, Var{T}} = Dict{String, Var{T}}()
+    varfullnames::Dict{String, Var{T}} = Dict{String, Var{T}}()
+    roots::Dict{Symbol, Any} = Dict{Symbol, Any}()
+    oids::Dict{Int, WeakRef} = Dict{Int, WeakRef}()
+    objoids::WeakKeyDict{Any, Int} = WeakKeyDict{Any, Int}()
     curoid::Int = 0
     curvid::Int = 0
     default_level = 1
     changed::Set{Int} = Set{Int}()
-    errors::Dict{Int,Exception} = Dict{Int,Exception}()
+    errors::Dict{Int, Exception} = Dict{Int, Exception}()
     verbose_oids::Bool = false
-    data::Union{Nothing,T} = nothing
+    data::T
 end
+
+VarEnv(data::T) where {T} = VarEnv{T}(; data)
 
 struct VarCtx{T}
     env::VarEnv{T}
@@ -69,25 +80,34 @@ Error while interacting with a variable
 """
 struct VarException{T} <: Exception
     type::Symbol
-    env::Union{VarEnv,Nothing}
-    var::Union{Var,Nothing}
+    env::Union{VarEnv, Nothing}
+    var::Union{Var, Nothing}
     msg::AbstractString
     cause::Exception
-    VarException(type, env, var, msg, cause = NoCause()) =
+    VarException(type, env, var, msg, cause=NoCause()) =
         new{type}(type, env, var, msg, cause)
-    VarException(type, ctx::VarCtx, msg, cause = NoCause()) =
+    VarException(type, ctx::VarCtx, msg, cause=NoCause()) =
         new{type}(type, ctx.env, ctx.var, msg, cause)
 end
 
 @kwdef mutable struct MonitorData
     name::Symbol
-    rootpath::String
-    data::Dict{Symbol,Any}
-    data_keys::Vector{Pair{Symbol,Symbol}} = Pair{Symbol,Symbol}[]
-    vars::Dict{Symbol,Var} = Dict{Symbol,Var}()
-    update::Float64
     root::Var
+    rootpath::String
+    update::Float64
+    quiet::Bool = false
+    update_topics::Vector{String} = String[]
+    data::Dict{Symbol, Any}
+    data_keys::Vector{Pair{Symbol, String}} = Pair{Symbol, String}[]
+    vars::Dict{Symbol, Var} = Dict{Symbol, Var}()
     disabled::Bool = false
+end
+
+@kwdef mutable struct ConStats
+    incoming_updates::Int = 0
+    incoming_update_attempts::Int = 0
+    outgoing_updates::Int = 0
+    refreshes::Int = 0
 end
 
 """
@@ -95,26 +115,64 @@ Connection{DataType}
 
 DataType is the type of the `data` field
 """
-@kwdef mutable struct Connection{DataType}
+mutable struct Connection{DataType}
+    name::String
     data::DataType
-    channel::Channel{Function} = Channel{Function}()
-    running::Bool = true
-    pending_update::Bool = false
-    env::VarEnv{Connection{DataType}} = VarEnv{Connection{DataType}}()
-    monitors::Dict{Symbol,MonitorData} = Dict{Symbol,MonitorData}()
-    changed::Set{Var} = Set{Var}()
-    outgoing::Dict{Symbol,JsonType} = Dict{Symbol,JsonType}() # data to be sent out
-    lastcheck::Float64 = 0
-    default_update::Float64 = 0.25
-    verbosity::Int64 = 0
-    indicate_start::Bool = true
-    data_blocks::Dict{Symbol,Any} = Dict{Symbol,Any}()
+    channel::Channel{Function}
+    refresh_channel::Channel{Function}
+    running::Bool
+    pending_update::Bool
+    env::VarEnv{Connection{DataType}}
+    monitors::Dict{Symbol, MonitorData}
+    changed::Set{Var}
+    outgoing::OrderedDict{Symbol, JsonType} # data to be sent out
+    lastcheck::Float64
+    default_update::Float64
+    verbosity::Int64
+    indicate_start::Bool
+    data_blocks::Dict{Symbol, Any}
+    incoming_blocks::OrderedDict{Symbol, Any}
+    stats::ConStats
+    Connection(::Type{T}) where {T} = new{T}()
 end
 
-function Connection(data::T; kw...) where {T}
-    local con = Connection{T}(; data, kw...)
-    con.env.data = con
+function Connection(
+    name::String,
+    data::T;
+    channel::Channel{Function}=Channel{Function}(),
+    refresh_channel::Channel{Function}=Channel{Function}(),
+    running::Bool=true,
+    pending_update::Bool=false,
+    monitors::Dict{Symbol, MonitorData}=Dict{Symbol, MonitorData}(),
+    changed::Set{Var}=Set{Var}(),
+    outgoing::OrderedDict{Symbol, JsonType}=OrderedDict{Symbol, JsonType}(), # data to be sent out
+    lastcheck::Float64=0.0,
+    default_update::Float64=0.25,
+    verbosity::Int64=0,
+    indicate_start::Bool=true,
+    data_blocks::Dict{Symbol, Any}=Dict{Symbol, Any}(),
+    incoming_blocks::OrderedDict{Symbol, Any}=OrderedDict{Symbol, Any}(),
+) where {T}
+    local con = Connection(T)
+    con.name = name
+    con.data = data
+    con.channel = channel
+    con.refresh_channel = refresh_channel
+    con.running = running
+    con.pending_update = pending_update
+    con.monitors = monitors
+    con.changed = changed
+    con.outgoing = outgoing
+    con.lastcheck = lastcheck
+    con.default_update = default_update
+    con.verbosity = verbosity
+    con.indicate_start = indicate_start
+    con.data_blocks = data_blocks
+    con.incoming_blocks = incoming_blocks
+    con.env = VarEnv{Connection{T}}(; data=con)
+    con.stats = ConStats()
     con
 end
 
-const CURRENT_CONNECTION = ScopedValue{Union{Nothing,Connection}}(nothing)
+const current_connection = ScopedValue{Union{Nothing, Connection}}(nothing)
+const current_runner = ScopedValue{Union{Nothing, Channel}}(nothing)
