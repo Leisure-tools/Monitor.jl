@@ -47,7 +47,7 @@ Monitor.jl supports 4 types of blocks with some of these common properties:
 * **`origin:`** ID of the subscriber that produced this block  
 * **`topics:`** optional topic(s) to publish the block to – transports should route these  
 * **`tags:`** identifies sets of blocks this block “belongs to”. Can be a string or an array of strings; monitor and data blocks can use this to categorize results and also for cleanup  
-* **`targets:`** optional subscriber or list of subscribers that should receive the block (others ignore it)  
+* **`targets:`** optional subscriber or list of subscribers that should act on the block (others track it)  
 
 Block types:  
 
@@ -352,7 +352,12 @@ function handle_incoming_blocks(con::Connection, updates::AbstractDict, updated:
     end
 end
 
-send(name::Symbol, data) = send(current_connection[], name, data)
+function send(data::NamedTuple)
+    con = current_connection[]
+    sync(con.refresh_channel) do
+        send(con, data.name, data)
+    end
+end
 
 function send(::Nothing, ::Symbol, ::Any)
     try

@@ -78,6 +78,12 @@ function Monitor.get_updates(con::Connection{RedisCon}, timeout::Float64)
                     error("Error decoding batch: $(info["batch"]): $err")
                 end
                 for item in batch
+                    if haskey(item, :target)
+                        t = item.target
+                        id = con.data.peerid
+                        t != id && !(t isa Vector && id ∈ t) &&
+                            continue
+                    end
                     dict[Symbol(item.name)] = item
                 end
             end
@@ -89,39 +95,42 @@ end
 function Monitor.send_updates(con::Connection{RedisCon}, outgoing::OrderedDict)
     isempty(outgoing) &&
         return nothing
-    println("SENDING UPDATES")
-    for (name, value) in outgoing
-        @info "   ITEM" name value
-    end
     output = con.data.output_stream
     topics = Set(
         str
         for (name, data) in outgoing
         for mon in (con.monitors[name],)
-        for str in (
-            if isempty(mon.update_topics)
-                (output,)
-            else
-                mon.update_topics
-            end
-        )
+        for str in mon.update_topics
     )
+    @info "SENDING UPDATES" topics
+    for (name, value) in outgoing
+        @info "   ITEM" name value
+    end
+    push!(topics, "")
     for topic in topics
         blocks = [
             merge!(Dict{Symbol, Any}(:name => name), block)
             for (name, block) in outgoing
             for mon in (con.monitors[name],)
-            if isempty(mon.update_topics) || topic ∈ mon.update_topics
+            if (topic == "" && isempty(mon.update_topics)) || topic ∈ mon.update_topics
         ]
-        xadd(
-            con.data.redis,
-            con.data.output_stream,
-            "*",
-            "batch",
-            JSON3.write(blocks),
-            "sender",
-            con.data.peerid,
-        )
+        if !isempty(blocks)
+            if topic == ""
+                topic = con.data.output_stream
+            else
+                topic = "$(con.data.output_stream)-$topic"
+                @info "SENDING ON $topic" blocks
+            end
+            xadd(
+                con.data.redis,
+                topic,
+                "*",
+                "batch",
+                JSON3.write(blocks),
+                "sender",
+                con.data.peerid,
+            )
+        end
     end
 end
 

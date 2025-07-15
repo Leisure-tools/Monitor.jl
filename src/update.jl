@@ -9,18 +9,45 @@ function opt(mon::JSON3.Object, keysym::Symbol)
     return nothing
 end
 
+function prop(obj::JSON3.Object, key::Symbol, default)
+    v = something(get(obj, key, ""), "")
+    isempty(v) ? default : v
+end
+
 function monitor_from(con::Connection, name::Symbol, mon::JSON3.Object)
     local cur = get(con.monitors, name, nothing)
     local new = isnothing(cur)
-    local rootpath = mon.root
-    local update = get(mon, :update, con.default_update)
+    local rootpath = prop(mon, :root, "Main")
+    local update = prop(mon, :update, con.default_update)
+    local quiet = parse(Bool, prop(mon, :quiet, "false"))
+    local topics = prop(mon, :updatetopics, String[])
+    local update_topics = if !haskey(mon, :updatetopics)
+        String[]
+    elseif mon.updatetopics isa String
+        [topics]
+    elseif mon.updatetopics isa Vector
+        String[topics...]
+    else
+        String[]
+    end
 
+    if update isa String
+        update = try
+            parse(Float64, update)
+        catch
+            con.default_update
+        end
+    end
     if new
         root = Var(con.env, "root?path=$rootpath")
-        cur = MonitorData(; rootpath, name, data=mon, update, root)
+        cur = MonitorData(;
+            rootpath, name, data=mon, update, root, original=mon, quiet, update_topics
+        )
         con.monitors[name] = cur
     else
         cur.update = update
+        cur.quiet = quiet
+        cur.update_topics = update_topics
         root = cur.root
         if '&' ∈ rootpath || cur.root.metadata[:path] != rootpath
             local newmeta = parsemetadata("path=$rootpath")
@@ -143,6 +170,9 @@ function base_handle_delete(con::Connection, del::JSON3.Object)
     end
 end
 
+handle_monitor(kw::NamedTuple) =
+    handle_monitor(current_connection[], kw.name, json(kw))
+
 # Receive a monitor block, by default just calls base_handle_monitor(con, name, mon)
 handle_monitor(con::Connection, name::Symbol, mon::JSON3.Object) =
     base_handle_monitor(con, name, mon)
@@ -162,6 +192,7 @@ function base_handle_monitor(con::Connection, name::Symbol, mon::JSON3.Object)
     cur.data = JSON3.read(JSON3.write(val), Dict{Symbol, Any})
     cur.data_keys = new_data_keys
     cur.root = root
+    cur.original = mon
     con.env.vars[cur.root.id] = root
     # set data from incoming monitor
     if new
@@ -243,7 +274,7 @@ function find_outgoing_updates(con::Connection; force=:none)
             continue
         !isempty(mon.vars) && push!(check, (v.id for (_, v) in mon.vars)...)
         push!(check, mon.root.id)
-        # don't publish quiet monitors
+        # don't publish quiet monitors, but keep refreshing their variables
         !mon.quiet &&
             push!(monitors, mon.name)
     end
@@ -271,7 +302,10 @@ function send_changes(con::Connection, monitors=values(con.monitors))
     for mon in monitors
         if !mon.disabled && haschanges(con, mon)
             verbose(con, "Queuing monitor update for ", mon.name, ": ", compute_data(con, mon))
-            send(con, mon.name, compute_data(con, mon))
+            data = compute_data(con, mon)
+            con.data_blocks[mon.name] = data
+            mon.original = json(data)
+            send(con, mon.name, data)
         end
     end
     empty!(con.env.changed)
@@ -314,7 +348,7 @@ function compute_data(con::Connection, mon::MonitorData)
     end
     # maintain order
     return (;
-        type="monitor",
+        mon.original...,
         root=mon.rootpath,
         value=OrderedDict(name => mon.data[name] for (name,) in mon.data_keys),
     )

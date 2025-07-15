@@ -101,6 +101,7 @@ end
     data_keys::Vector{Pair{Symbol, String}} = Pair{Symbol, String}[]
     vars::Dict{Symbol, Var} = Dict{Symbol, Var}()
     disabled::Bool = false
+    original::JSON3.Object
 end
 
 @kwdef mutable struct ConStats
