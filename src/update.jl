@@ -14,22 +14,45 @@ function prop(obj::JSON3.Object, key::Symbol, default)
     isempty(v) ? default : v
 end
 
+function prop_list(obj::JSON3.Object, key::Symbol, default::Vector{T}) where {T}
+    v = get(obj, key, nothing)
+    isnothing(v) &&
+        return default
+    v isa Vector{T} &&
+        return v
+    if v isa Vector
+        T == String &&
+            return string.(v)
+        return T[convert(T, item) for item in v]
+    end
+    v isa T &&
+        return [v]
+    T == String &&
+        return [string(v)]
+    return [convert(T, v)]
+end
+
+function parse_prop(t::Type{T}, obj::JSON3.Object, key::Symbol, default::T) where {T}
+    p = prop(obj, key, default)
+    return if T == Bool && get(obj, key, nothing) == ""
+        true
+    elseif p isa T
+        p
+    elseif p isa String
+        parse(T, p)
+    else
+        convert(T, p)
+    end
+end
+
 function monitor_from(con::Connection, name::Symbol, mon::JSON3.Object)
     local cur = get(con.monitors, name, nothing)
     local new = isnothing(cur)
     local rootpath = prop(mon, :root, "Main")
-    local update = prop(mon, :update, con.default_update)
-    local quiet = parse(Bool, prop(mon, :quiet, "false"))
-    local topics = prop(mon, :updatetopics, String[])
-    local update_topics = if !haskey(mon, :updatetopics)
-        String[]
-    elseif mon.updatetopics isa String
-        [topics]
-    elseif mon.updatetopics isa Vector
-        String[topics...]
-    else
-        String[]
-    end
+    local update = parse_prop(Float64, mon, :update, con.default_update)
+    local quiet = parse_prop(Bool, mon, :quiet, false)
+    local topics = prop_list(mon, :topics, String[])
+    local update_topics = prop_list(mon, :updatetopics, String[])
 
     if update isa String
         update = try
@@ -39,12 +62,14 @@ function monitor_from(con::Connection, name::Symbol, mon::JSON3.Object)
         end
     end
     if new
+        verbose(2, con, "NEW MONITOR: $name")
         root = Var(con.env, "root?path=$rootpath")
         cur = MonitorData(;
-            rootpath, name, data=mon, update, root, original=mon, quiet, update_topics
+            rootpath, name, data=mon, update, root, original=mon, quiet, update_topics, topics
         )
         con.monitors[name] = cur
     else
+        verbose(con, "OLD MONITOR: $name")
         cur.update = update
         cur.quiet = quiet
         cur.update_topics = update_topics
@@ -108,7 +133,7 @@ function find_monitor_vars(
                 local var = Var(con.env, var_name; id=NO_ID, parent=cur.root.id, fullname=k)
                 var.metadata = meta
                 var.path = parsepath(meta[:path])
-                verbose(con, "MADE NEW VAR $var_name($(var.id))")
+                verbose(2, con, "MADE NEW VAR $var_name($(var.id))")
                 cur.vars[var.name] = var
             end
         end
@@ -135,9 +160,9 @@ function handle_incoming_block(
 )
     if update.type ∈ ("monitor", "data") && update == get(con.data_blocks, name, nothing)
         delete!(updated, name)
-        verbose(con, "IGNORING REDUNDANT MONITOR '$name'", update)
+        verbose(2, con, "IGNORING REDUNDANT MONITOR '$name'", update)
     elseif update.type == "monitor"
-        verbose(con, "RECEIVED MONITOR '$name'", update)
+        verbose(2, con, "RECEIVED MONITOR '$name'", update)
         handle_monitor(con, name, update)
     elseif update.type == "code"
         handle_code(con, name, update)
@@ -170,58 +195,69 @@ function base_handle_delete(con::Connection, del::JSON3.Object)
     end
 end
 
-handle_monitor(kw::NamedTuple) =
-    handle_monitor(current_connection[], kw.name, json(kw))
+function handle_monitor(kw::NamedTuple)
+    if isnothing(current_connection[])
+        println("NO CURRENT CONNECTION!")
+    else
+        verbose(current_connection[], "HANDLING ", json(kw))
+        handle_monitor(current_connection[], kw.name, json(kw))
+    end
+end
 
 # Receive a monitor block, by default just calls base_handle_monitor(con, name, mon)
 handle_monitor(con::Connection, name::Symbol, mon::JSON3.Object) =
     base_handle_monitor(con, name, mon)
 
 function base_handle_monitor(con::Connection, name::Symbol, mon::JSON3.Object)
-    verbose(con, "GOT MONITOR: ", mon)
-    local missing = filter(∉(keys(mon)), (:root, :value))
-    if !isempty(missing)
-        @warn "Bad monitor object, missing these keys: $missing" mon
-        return false
-    end
-    local new, root, cur = monitor_from(con, name, mon)
-    local val = mon.value
-    local new_data_keys = find_monitor_vars(con, new, name, cur, mon)
+    try
+        verbose(2, con, "GOT MONITOR: ", mon)
+        local missing = filter(∉(keys(mon)), (:root, :value))
+        if !isempty(missing)
+            @warn "Bad monitor object, missing these keys: $missing" mon
+            return false
+        end
+        local new, root, cur = monitor_from(con, name, mon)
+        local val = mon.value
+        local new_data_keys = find_monitor_vars(con, new, name, cur, mon)
 
-    cur.rootpath = mon.root
-    cur.data = JSON3.read(JSON3.write(val), Dict{Symbol, Any})
-    cur.data_keys = new_data_keys
-    cur.root = root
-    cur.original = mon
-    con.env.vars[cur.root.id] = root
-    # set data from incoming monitor
-    if new
-        if !cur.disabled
-            # add monitor variable changes from env so they get sent out
-            for (_, var) in cur.vars
-                haskey(con.env.vars, var.id) &&
-                    push!(con.env.changed, var.id)
+        cur.rootpath = mon.root
+        cur.data = JSON3.read(JSON3.write(val), Dict{Symbol, Any})
+        cur.data_keys = new_data_keys
+        cur.root = root
+        cur.original = mon
+        con.env.vars[cur.root.id] = root
+        # set data from incoming monitor
+        if new
+            if !cur.disabled
+                # add monitor variable changes from env so they get sent out
+                for (_, var) in cur.vars
+                    haskey(con.env.vars, var.id) &&
+                        push!(con.env.changed, var.id)
+                end
+            else
             end
-        end
-    elseif !isempty(new_data_keys) && !cur.disabled
-        # remove monitor variable changes from env so they don't get sent out
-        for (jsym, vfullname) in new_data_keys
-            json = get(cur.data, jsym, nothing)
-            var = con.env.varfullnames[vfullname]
-            if !is_same(json, var.json_value)
-                safe_set(con, cur, var, json)
+        elseif !isempty(new_data_keys) && !cur.disabled
+            # remove monitor variable changes from env so they don't get sent out
+            for (jsym, vfullname) in new_data_keys
+                json = get(cur.data, jsym, nothing)
+                var = con.env.varfullnames[vfullname]
+                if !is_same(json, var.json_value)
+                    safe_set(con, cur, var, json)
+                end
+                delete!(con.env.changed, var.id)
             end
-            delete!(con.env.changed, var.id)
+            verbose(
+                con,
+                "MONITOR ROOT: ",
+                mon.root,
+                "\n  ROOT:",
+                root,
+                "\n  VALUE: ",
+                root.internal_value,
+            )
         end
-        verbose(
-            con,
-            "MONITOR ROOT: ",
-            mon.root,
-            "\n  ROOT:",
-            root,
-            "\n  VALUE: ",
-            root.internal_value,
-        )
+    catch err
+        @error "Error handling incoming monitor" exception = (err, catch_backtrace())
     end
 end
 
@@ -295,19 +331,34 @@ function find_outgoing_updates(con::Connection; force=:none)
             push!(checked, a.id)
         end
     end
-    send_changes(con, (con.monitors[name] for name in monitors))
+    #send_changes(con, (con.monitors[name] for name in monitors))
+    send_changes(con)
 end
 
 function send_changes(con::Connection, monitors=values(con.monitors))
+    mons = Set()
     for mon in monitors
+        if haschanges(con, mon)
+            push!(mons, mon)
+            #@info "MONITOR CHANGED: $(mon.name)"
+        end
         if !mon.disabled && haschanges(con, mon)
-            verbose(con, "Queuing monitor update for ", mon.name, ": ", compute_data(con, mon))
             data = compute_data(con, mon)
             con.data_blocks[mon.name] = data
             mon.original = json(data)
-            send(con, mon.name, data)
+            !mon.quiet && verbose(
+                1, con, "Queuing monitor update for ", mon.name, ": ", compute_data(con, mon)
+            )
+            !mon.quiet && send(con, mon.name, data)
         end
     end
+    #if !isempty(con.env.changed)
+    #    @info "CHANGES" vars = [
+    #        id => con.env.vars[id] for id in con.env.changed
+    #    ] monitors = [
+    #        mon.name for mon in mons
+    #    ]
+    #end
     empty!(con.env.changed)
     empty!(con.env.errors)
 end
@@ -321,11 +372,11 @@ function outgoing_update_period(con::Connection)
 end
 
 function haschanges(con::Connection, mon::MonitorData)
-    return !isnothing(
-        findfirst(mon.vars) do v
-            return v.id ∈ con.env.changed
-        end,
-    )
+    for (_, v) in mon.vars
+        v.id ∈ con.env.changed &&
+            return true
+    end
+    return false
 end
 
 function namefor(var::Var, name::String)
@@ -347,9 +398,12 @@ function compute_data(con::Connection, mon::MonitorData)
         mon.data[key] = var.json_value
     end
     # maintain order
-    return (;
-        mon.original...,
-        root=mon.rootpath,
-        value=OrderedDict(name => mon.data[name] for (name,) in mon.data_keys),
+    return OrderedDict{Symbol, Any}(
+        (Symbol(k) => v for (k, v) in mon.original if k ∉ MONITOR_KEYS)...,
+        :root => mon.rootpath,
+        (mon.update != con.default_update ? (:update => mon.update,) : ())...,
+        (mon.quiet ? (:quiet => mon.quiet,) : (;))...,
+        (!isempty(mon.update_topics) ? (:updatetopics => mon.update_topics,) : ())...,
+        :value => OrderedDict(name => mon.data[name] for (name,) in mon.data_keys),
     )
 end

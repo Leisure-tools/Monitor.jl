@@ -1,6 +1,7 @@
 const NO_ID = -1
 const PathComponent = Union{Number, Symbol, Function, Tuple{Symbol, Symbol}}
 const JsonType = Union{JSON3.Object, JSON3.Array, String, Float64, Int64, Bool, Nothing}
+const DEFAULT_UPDATE_PERIOD = 0.1
 
 """
     Var
@@ -96,6 +97,7 @@ end
     rootpath::String
     update::Float64
     quiet::Bool = false
+    topics::Vector{String} = String[]
     update_topics::Vector{String} = String[]
     data::Dict{Symbol, Any}
     data_keys::Vector{Pair{Symbol, String}} = Pair{Symbol, String}[]
@@ -119,7 +121,7 @@ DataType is the type of the `data` field
 mutable struct Connection{DataType}
     name::String
     data::DataType
-    channel::Channel{Function}
+    com_channel::Channel{Function}
     refresh_channel::Channel{Function}
     running::Bool
     pending_update::Bool
@@ -134,30 +136,40 @@ mutable struct Connection{DataType}
     data_blocks::Dict{Symbol, Any}
     incoming_blocks::OrderedDict{Symbol, Any}
     stats::ConStats
+    accounting::Dict{Int64, Tuple{Float64, Channel, Function, Tuple}}
+    accounting_channel::Channel{Function}
+    channel_names::Dict{Channel, String}
+    exec_num::Int64
+    griped::Dict{Int64, Tuple{Float64, Channel, Function, Tuple}}
+    use_accounting::Bool
+    account::Set{Channel}
+    update_input::Channel{Function}
+    update_output::Channel{Function}
     Connection(::Type{T}) where {T} = new{T}()
 end
 
 function Connection(
     name::String,
     data::T;
-    channel::Channel{Function}=Channel{Function}(),
-    refresh_channel::Channel{Function}=Channel{Function}(),
+    channel::Channel{Function}=Channel{Function}(10),
+    refresh_channel::Channel{Function}=Channel{Function}(10),
     running::Bool=true,
     pending_update::Bool=false,
     monitors::Dict{Symbol, MonitorData}=Dict{Symbol, MonitorData}(),
     changed::Set{Var}=Set{Var}(),
     outgoing::OrderedDict{Symbol, JsonType}=OrderedDict{Symbol, JsonType}(), # data to be sent out
     lastcheck::Float64=0.0,
-    default_update::Float64=0.25,
+    default_update::Float64=DEFAULT_UPDATE_PERIOD,
     verbosity::Int64=0,
     indicate_start::Bool=true,
     data_blocks::Dict{Symbol, Any}=Dict{Symbol, Any}(),
     incoming_blocks::OrderedDict{Symbol, Any}=OrderedDict{Symbol, Any}(),
+    use_accounting::Bool=false,
 ) where {T}
     local con = Connection(T)
     con.name = name
     con.data = data
-    con.channel = channel
+    con.com_channel = channel
     con.refresh_channel = refresh_channel
     con.running = running
     con.pending_update = pending_update
@@ -172,8 +184,19 @@ function Connection(
     con.incoming_blocks = incoming_blocks
     con.env = VarEnv{Connection{T}}(; data=con)
     con.stats = ConStats()
+    con.accounting = Dict{Int64, Tuple{Float64, Channel, Function}}()
+    con.accounting_channel = Channel{Function}(10)
+    con.channel_names = Dict{Channel, String}()
+    con.exec_num = 0
+    con.griped = Dict{Int64, Tuple{Float64, Channel, Function}}()
+    con.use_accounting = use_accounting
+    con.account = Set{Channel}()
+    con.update_input = Channel{Function}(10)
+    con.update_output = Channel{Function}(10)
     con
 end
 
 const current_connection = ScopedValue{Union{Nothing, Connection}}(nothing)
 const current_runner = ScopedValue{Union{Nothing, Channel}}(nothing)
+const current_runner_name = ScopedValue{Union{Nothing, String}}(nothing)
+const LONG_TIME = 10

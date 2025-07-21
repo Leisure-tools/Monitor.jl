@@ -64,21 +64,20 @@ Returns:
 function xread(con::RedisConnection, streams; count=nothing, block=nothing)
     local args = opt(; count)
 
-    if block isa AbstractFloat
+    if block isa Number
         block = millis(block)
     end
     opt(args; block)
     push!(args, "streams")
-    keys = []
     values = []
     for (k, v) in streams
-        push!(keys, k)
+        push!(args, k)
         push!(values, v)
     end
-    push!(args, keys..., values...)
-    #println("XREAD ", join(args, " "))
+    push!(args, values...)
+    #verbose(3, con, "XREAD ", join(args, " "))
     res = _xread(con, args...)
-    #println("XREAD: ", res)
+    #verbose(3, con, "XREAD: ", res)
     return res
 end
 

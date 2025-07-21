@@ -16,10 +16,10 @@ const JPATH_COMPONENT = r"(@?[\p{LC}\p{Lm}\p{Lo}\p{Nl}\p{Sc}\p{So}_][\p{LC}\p{Lm
 
 verbosity(::VarEnv) = 0
 
-verbose(::VarEnv) = verbosity(env) > 0
+verbose(env::VarEnv) = verbosity(env) > 0
 
 Base.show(io::IO, var::Var) =
-    print(io, "Var($(metaname(var)), $(var.parent)->$(var.id), $(var.path))")
+    print(io, "Var($(metaname(var)), $(var.id)<-$(var.parent), $(var.path))")
 
 Base.show(io::IO, e::VarException) = print(io, e.msg)
 
@@ -285,10 +285,12 @@ get_path(ctx::VarCtx, path) = get_path(ctx.env, ctx.var, path)
 get_path(env::VarEnv, var::Var, path) = invokelatest(basic_get_path, env, var, path)
 
 function basic_get_path(env::VarEnv{T}, var::Var, path) where {T}
-    exc(type, msg, err) = throw(VarException(type, env, var, msg, err))
+    function exc(type, msg, err=NoCause())
+        throw(VarException(type, env, var, msg, err))
+    end
     if var.parent == NO_ID && isempty(var.path)
         isnothing(var.internal_value) &&
-            throw(VarException(:path, env, var, "no parent and no value"))
+            exc(:path, "no parent and no value")
         return var.internal_value
     end
     cur = var.parent == NO_ID ? nothing : env.vars[var.parent].internal_value
@@ -297,9 +299,8 @@ function basic_get_path(env::VarEnv{T}, var::Var, path) where {T}
         cur = if !isnothing(match(r"^\.\.+$", elstr))
             for _ = 2:length(string(el))
                 var = env.vars[var.parent]
-                var.parent == NO_ID && throw(
-                    VarException(:path, env, var, "error going up in path with no parent")
-                )
+                var.parent == NO_ID &&
+                    exc(:path, "error going up in path with no parent")
             end
             env.vars[var.parent].internal_value
         elseif el isa Symbol && startswith(elstr, "@")
@@ -317,7 +318,7 @@ function basic_get_path(env::VarEnv{T}, var::Var, path) where {T}
                 exc(:path, "error getting $var root $el in path $path", err)
             end
         elseif cur === nothing
-            throw(VarException(:path, env, var, "error getting $var field $el in path $path"))
+            exc(:path, "error getting $var field $el in path $path")
         elseif el isa Symbol
             try
                 if dicty(cur) && haskey(cur, el)
@@ -346,6 +347,9 @@ function basic_get_path(env::VarEnv{T}, var::Var, path) where {T}
                 el(VarCtx(env, var), cur)
             catch err
                 check_sigint(err)
+                @error "Exception executing method in variable path" cur path exception = (
+                    err, catch_backtrace()
+                )
                 exc(:program, "error calling $var getter function $el in path $path", err)
             end
         elseif hasmethod(el, typeof.((cur,)))
@@ -353,9 +357,13 @@ function basic_get_path(env::VarEnv{T}, var::Var, path) where {T}
                 el(cur)
             catch err
                 check_sigint(err)
+                @error "Exception executing method in variable path" cur path exception = (
+                    err, catch_backtrace()
+                )
                 exc(:program, "error calling $var getter function $el in path $path", err)
             end
         else
+            @error "Exception getting variable value" path exception = (err, catch_backtrace())
             exc(
                 :program,
                 "No $var getter method $el for $(typeof.((cur,))) in path $path",
@@ -571,6 +579,9 @@ function compute_value(ctx::VarCtx)
     !var.readable &&
         throw(VarException(:readable_error, ctx, "variable $var is not readable"))
     use_value(ctx, get_path(ctx, var.path))
+    #if !is_same(old, var.internal_value)
+    #    println("VAR CHANGED: $(var.name), ", repr(old), " -> ", repr(var.internal_value))
+    #end
     return !is_same(old, var.internal_value)
 end
 
@@ -608,6 +619,7 @@ function refresh(env::VarEnv, var::Var; throw=false, track=true)
         if throw
             rethrow()
         else
+            verbose(env)
             env.errors[var.id] = err
         end
     end

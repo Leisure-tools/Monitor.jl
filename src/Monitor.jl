@@ -68,7 +68,8 @@ Block types:
 * Code blocks -- run Julia code  
   * **`type:`** "code"  
   * **`topics:`** optional topic to publish the block to, when it’s not the default  
-  * **`targets:`** optional list of subscribers that should receive the block (others ignore it)  
+  * **`reduce:`** optional list of topics to listen on that most other peers should ignore  
+  * **`targets:`** optional list of subscribers that should receive the block (others should ignore it)  
   * **`tags:`** identifyies a set of blocks. Can be a string or an array of strings  
   * **`language:`** language in which to evaluate code  
   * **`return:`** true if the code should return a block to be published.  
@@ -102,9 +103,9 @@ shutdown() -- close the connection
 
 current_connection[]::Connection -- get the current connection, useful for adding streams, etc.
 
-sync(func, [connection]) -- run a function synchronusly within the monitor thread, returning the result
+sync(func) -- run a function synchronusly within the monitor thread, returning the result
 
-async(func, [connection]) -- run a function asynchronously within the monitor thread
+async(func) -- run a function asynchronously within the monitor thread
 ```
 
 ADDING YOUR OWN TRANSPORTS
@@ -153,8 +154,10 @@ using UUIDs, JSON3
 import Base.Threads.@spawn
 using Base.ScopedValues: ScopedValue, with
 using OrderedCollections: OrderedDict
+using Dates
 
 const astr = AbstractString
+const MONITOR_KEYS = Set((:root, :update, :quiet, :updatetopics))
 
 include("types.jl")
 include("vars.jl")
@@ -186,51 +189,121 @@ The `spawn` keyword can be
 - `false`: immediately use this thread to run the connection -- does not return until closed
 - `nothing`: do not run the connection. The caller will arrange to run it
 """
-function start(
+start(
     name::String,
     data::T;
     roots::Dict{Symbol}=Dict{Symbol}(),
     spawn::Union{Bool, Nothing}=true,
     verbosity=0,
+    use_accounting=false,
+) where {T} = start(identity, name, data; roots, spawn, verbosity, use_accounting)
+
+function start(
+    init_func::Function,
+    name::String,
+    data::T;
+    roots::Dict{Symbol}=Dict{Symbol}(),
+    spawn::Union{Bool, Nothing}=true,
+    verbosity=0,
+    use_accounting=false,
 ) where {T}
-    con = Connection(name, data; verbosity)
+    con = Connection(name, data; verbosity, use_accounting)
     con.env.roots = roots
     init(con)
+    @info "RUNNING INIT FUNCTION: $(typeof(init_func))"
+    !isnothing(init_func) &&
+        init_func(con)
+    run_accounting(con)
     with(current_connection => con) do
         # put incoming updates into con.incoming_blocks
-        @spawn check_incoming_updates(con)
+        Monitor.spawn() do
+            check_incoming_updates(con)
+        end
         # 
-        @spawn process_updates(con)
+        Monitor.spawn() do
+            process_updates(con)
+        end
+        run_connection("INPUT", con, con.update_input; spawn=true)
+        run_connection("OUTPUT", con, con.update_output; spawn=true)
         if !isnothing(spawn)
             if spawn
                 verbose(
-                    con, "SPAWNING CONNECTION RUNNER, CURRENT CONNECTION: ", current_connection[]
+                    2, con, "SPAWNING CONNECTION RUNNER, CURRENT CONNECTION: ", current_connection[]
                 )
-                @spawn run_connection(con)
-                @spawn run_connection(con, con.refresh_channel)
+                run_connection("CONNECTION", con; spawn=true)
+                run_connection("REFRESH", con, con.refresh_channel; spawn=true)
             else
                 verbose(con, "RUNNING CONNECTION")
-                @async run_connection(con)
-                run_connection(con, con.refresh_channel)
+                @async run_connection("CONNECTION", con)
+                run_connection("REFRESH", con, con.refresh_channel)
             end
         end
     end
     return con
 end
 
-function in_connection(f::Function)
-    async(f, current_connection[].refresh_channel)
+function run_accounting(con::Connection)
+    spawn() do
+        run_connection("ACCOUNTING", con, con.accounting_channel; use_accounting=false)
+    end
+    Timer(2; interval=2) do t
+        local old = Set{Int64}()
+        local cur = time()
+        async(con, con.accounting_channel) do
+            for (i, tup) in con.accounting
+                t, _ = tup
+                if cur - t > LONG_TIME && !haskey(con.griped, i)
+                    con.griped[i] = tup
+                    push!(old, i)
+                end
+            end
+            filter!(con.griped) do (i, (t, chan, f, tracking))
+                if !haskey(con.accounting, i)
+                    tim = Dates.format(unix2datetime(t), "H:M:S.s")
+                    name = con.channel_names[chan]
+                    println("FINISHED $name #$i ($tim): $f")
+                    return false
+                elseif i ∈ old
+                    t, chan, f = con.griped[i]
+                    tim = Dates.format(unix2datetime(t), "H:M:S.s")
+                    name = con.channel_names[chan]
+                    @warn "LONG RUNNING TIME $name #$i ($tim): $f" exception = tracking
+                end
+                return true
+            end
+        end
+    end
+end
+
+function accounting_start(con::Connection, chan::Channel, func::Function, tracking::Tuple)
+    num = Ref{Int64}()
+    async(con, con.accounting_channel) do
+        num[] = con.exec_num
+        con.accounting[con.exec_num] = (time(), chan, func, tracking)
+        con.exec_num += 1
+    end
+    return num
+end
+
+function accounting_finish(con, num)
+    async(con, con.accounting_channel) do
+        delete!(con.accounting, num[])
+    end
+end
+
+function in_connection(f::Function; wrap=:die)
+    async(f, current_connection[], current_connection[].refresh_channel; wrap)
 end
 
 # this could be called in the main loop instead of spawning check_outgoing_updates
 function update(con::Connection=current_connection[])
     updates = Dict{Symbol, Any}()
     updated = Set{Symbol}()
-    sync(con) do
+    sync(con, con.com_channel) do
         merge!(updates, con.incoming_blocks)
         empty!(con.incoming_blocks)
     end
-    sync(con.refresh_channel) do
+    sync(con, con.refresh_channel) do
         # refresh first
         refresh(con; force=updated)
         # next handle incoming blocks, which removes monitor var changes from con.env
@@ -241,13 +314,15 @@ function update(con::Connection=current_connection[])
 end
 
 "Run code in the connection thread synchronously"
-sync(f::Function, con::Connection=current_connection[]) = sync(f, con.channel)
-function sync(f::Function, chan::Channel)
+sync(f::Function, con::Connection=current_connection[]) = sync(f, con, con.refresh_channel)
+function sync(f::Function, con::Connection, chan::Channel{Function})
     current_runner[] == chan &&
         return f()
     local result = Channel{Any}()
     local exception = nothing
-    async(chan) do
+    local exec_num
+
+    async(con, chan; wrap=:none) do
         try
             put!(result, invokelatest(f))
         catch err
@@ -262,34 +337,91 @@ function sync(f::Function, chan::Channel)
 end
 
 "Run code in the connection thread asynchronously"
-async(f::Function, con::Connection=current_connection[]) = async(f, con.channel)
-async(f::Function, chan::Channel) = put!(chan, f)
+async(f::Function) = async(f, current_connection[])
+async(f::Function, con::Connection) = async(f, con, con.refresh_channel)
+function async(
+    f::Function, con::Connection, chan::Channel{Function}; wrap::Symbol=:die
+)
+    f2 = f
+    if wrap != :none
+        f2 = function ()
+            try
+                f()
+            catch err
+                @error "Error in async call, shutting down" exception = (err, catch_backtrace())
+                if wrap == :die
+                    exit(1)
+                end
+            end
+        end
+    end
+    f3 = if chan ∈ con.account
+        tracking = num = try
+            error("backtrace")
+        catch err
+            (err, catch_backtrace())
+        end
+        () -> begin
+            num = accounting_start(con, chan, f, tracking)
+            try
+                f2()
+            finally
+                accounting_finish(con, num)
+            end
+        end
+    else
+        f2
+    end
+    put!(chan, f3)
+end
 
 """
 Process commands in the connection thread
 
 This is used for getting and mutating shared state in the connection
 """
-function run_connection(con::Connection, chan::Channel=con.channel)
-    verbose(con, "SPAWNED CONNECTION RUNNER, CURRENT CONNECTION: ", current_connection[])
+function run_connection(
+    name::String, con::Connection, chan::Channel=con.com_channel; use_accounting=true, spawn=false
+)
+    if spawn
+        return Monitor.spawn() do
+            run_connection(name, con, chan; use_accounting, spawn=false)
+        end
+    end
+    use_accounting && con.use_accounting &&
+        push!(con.account, chan)
+    cur = current_connection[]
+    curname = isnothing(cur) ? "none" : cur.name
+    verbose(
+        con, "SPAWNED CONNECTION RUNNER $name, CURRENT CONNECTION ", curname
+    )
     local failures = 0
     local failurebase = 1
+    local total_failures = 0
+    local count = 0
+    async(con, con.accounting_channel) do
+        con.channel_names[chan] = name
+    end
     while isopen(chan)
+        count += 1
         try
             with(current_connection => con, current_runner => chan) do
-                invokelatest(take!(chan))
+                f = take!(chan)
+                invokelatest(f)
             end
             failures = 0
-            failurebase = 1
         catch err
             check_sigint(err)
-            @error "Error processing command: $err" exception = (err, catch_backtrace())
             failures += 1
-            if failures == 10^failurebase
-                @error "$failures errors in a row"
-                failurebase += 1
-            elseif failures > 3
+            total_failures += 1
+            if failures < 4
+                @error "Error processing command: $err" exception = (err, catch_backtrace())
+            elseif failures == 4
                 @error "Muting errors because there were more than 3 in a row"
+            end
+            if total_failures == 10^failurebase
+                @error "$failures errors in total"
+                failurebase += 1
             end
         end
     end
@@ -309,12 +441,15 @@ end
 function check_incoming_updates(con::Connection)
     count = 0
     try
-        while isopen(con.channel)
+        while isopen(con.com_channel)
             count % 10 == 0 &&
-                @info "UPDATE CHECK $count"
-            invokelatest(process_incoming_update, con)
+                verbose(con, "UPDATE CHECK $count")
+            sync(con, con.update_input) do
+                process_incoming_update(con)
+            end
             count += 1
         end
+        @info "con channel closed"
     catch err
         @error "Error getting updates" exception = (err, catch_backtrace())
     end
@@ -324,15 +459,18 @@ end
 function process_incoming_update(con::Connection)
     try
         con.stats.incoming_update_attempts += 1
+        verbose(2, con, "GETTING UPDATES")
         local updates = get_updates(
             con, incoming_update_period(con)
         )::Union{OrderedDict{Symbol, JSON3.Object}, Nothing}
         if has_updates(con, updates)
             con.stats.incoming_updates += 1
-            verbose(con, "UPDATE: $updates \n  $(typeof(updates))")
-            sync(con) do
+            verbose(2, con, "UPDATE: $updates \n  $(typeof(updates))")
+            sync(con, con.com_channel) do
                 merge!(con.incoming_blocks, updates)
             end
+        else
+            verbose(2, con, "NO UPDATES")
         end
     catch err
         check_sigint(err)
@@ -345,7 +483,7 @@ has_updates(::Connection, ::Nothing) = false
 has_updates(::Connection, updates) = !isempty(updates)
 
 function handle_incoming_blocks(con::Connection, updates::AbstractDict, updated::Set{Symbol})
-    updatekeys = sort!([keys(updates)...]; by=string)
+    updatekeys = sort!([k for k in keys(updates)]; by=string)
     for name in updatekeys
         change = updates[name]
         handle_incoming_block(con, name, change, updated)
@@ -354,7 +492,7 @@ end
 
 function send(data::NamedTuple)
     con = current_connection[]
-    sync(con.refresh_channel) do
+    sync(con, con.refresh_channel) do
         send(con, data.name, data)
     end
 end
@@ -368,7 +506,7 @@ function send(::Nothing, ::Symbol, ::Any)
 end
 
 function send(con::Connection, name::Symbol, data::Any)
-    verbose(con, "Adding update MONITOR ", name, " VALUE ", json(data))
+    verbose(2, con, "Adding update MONITOR ", name, " VALUE ", json(data))
     con.outgoing[name] = json(data)
 end
 
@@ -376,13 +514,13 @@ json(value) = JSON3.read(JSON3.write(value))
 
 function refresh(con::Connection; force=:none)
     con.stats.refreshes += 1
-    verbose(2, con, "checking for changes")
+    #verbose(2, con, "checking for changes")
     find_outgoing_updates(con; force)
     if !isempty(con.outgoing)
         local updates = OrderedDict(con.outgoing)
         empty!(con.outgoing)
         try
-            verbose(con, "CALLING SEND UPDATES")
+            verbose(2, con, "CALLING SEND UPDATES")
             send_updates(con, updates)
         catch e
             check_sigint(e)
@@ -396,8 +534,10 @@ function process_updates(con::Connection)
     local sleepcount = 0
     verbose(con, "\nCHECKING UPODATES, SLEEP PERIOD: $(outgoing_update_period(con))\n")
     try
-        while isopen(con.channel)
-            sleepcount = invokelatest(process_outgoing_update, con, sleepcount)
+        while isopen(con.com_channel)
+            sync(con, con.update_output) do
+                sleepcount = invokelatest(process_outgoing_update, con, sleepcount)
+            end
         end
     catch err
         @error "Error processing update: $err" exception = (err, catch_backtrace())
@@ -410,7 +550,7 @@ end
 function process_outgoing_update(con::Connection, sleepcount::Int64)
     try
         local period = outgoing_update_period(con)
-        if con.lastcheck + period - time() > 0
+        if con.lastcheck + period > time()
             sleepcount += 1
             (sleepcount == 11 || sleepcount == 101) &&
                 verbose(con, "SLEPT MORE THAN $(sleepcount - 1) TIMES")
@@ -438,12 +578,20 @@ shutdown() = shutdown(current_connection[])
 shutdown(::Nothing) = @info("Attempt to shut down a connection that is already shut down")
 
 function shutdown(con::Connection)
-    close(con.channel)
+    close(con.com_channel)
 end
 
 "HOOK"
 function send_updates(::Connection, ::OrderedDict)
     error("UNDEFINED HOOK: send_updates")
+end
+
+function spawn(f::Function, name="")
+    @spawn try
+        f()
+    catch err
+        @error "Error $(name != "" ? "in thread $name" : "")" exception = (err, catch_backtrace())
+    end
 end
 
 end
