@@ -184,6 +184,8 @@ function handle_updates(con::Connection{RedisCon}, updates)
     local streams = Dict{String, String}()
     #@info "GOT UPDATES" updates
     for (stream, result) in updates
+        isnothing(result) &&
+            continue
         for (id, update) in result
             #con.data.input_streams[stream] = id
             streams[stream] = id
