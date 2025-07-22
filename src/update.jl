@@ -106,36 +106,17 @@ function find_monitor_vars(
     local new_data_keys = Pair{Symbol, String}[]
     local old_vars = Set{Symbol}()
     local disabled = get(mon, :disabled, false)
+    local rename_result = ()
 
     cur.disabled = disabled
     if !disabled
+        rename = get(mon, :rename, nothing)
+        if !isnothing(rename)
+            rename_result = find_monitor_var(con, cur, name, rename, old_vars)
+        end
         for (ksym, _) in val
-            local k = string(ksym)
-            local m = match(VAR_NAME, k)
-            isnothing(m) && error("Bad monitor variable in $name: $k")
-            local var_name = Symbol(m[1])
-            push!(old_vars, var_name)
-            push!(new_data_keys, ksym => k)
-            local metastr = something(m[2], "path=$(m[1])$(something(m[3], ""))")
-            local meta = parsemetadata(metastr)
-            if !haskey(meta, :path)
-                meta[:path] = var_name
-            end
-            if haskey(cur.vars, var_name)
-                local var = cur.vars[var_name]
-                var.metadata == meta && continue
-                # metadata changed
-                if var.metadata[:path] != meta[:path]
-                    var.path = parsepath(meta[:path])
-                end
-                var.metadata = meta
-            else
-                local var = Var(con.env, var_name; id=NO_ID, parent=cur.root.id, fullname=k)
-                var.metadata = meta
-                var.path = parsepath(meta[:path])
-                verbose(2, con, "MADE NEW VAR $var_name($(var.id))")
-                cur.vars[var.name] = var
-            end
+            pair = find_monitor_var(con, cur, name, string(ksym), old_vars)[1]
+            push!(new_data_keys, pair)
         end
         for (name, var) in cur.vars
             (name ∈ old_vars || var.parent == NO_ID) && continue
@@ -149,7 +130,38 @@ function find_monitor_vars(
         end
         empty!(cur.vars)
     end
-    return new_data_keys
+    return rename_result, new_data_keys
+end
+
+function find_monitor_var(
+    con::Connection, cur::MonitorData, mon_name::Symbol, name::String, old_vars
+)
+    m = match(VAR_NAME, name)
+    isnothing(m) && error("Bad monitor rename variable in $mon_name: $name")
+    #local var_name = Symbol(m[1])
+    local var_name = Symbol(name)
+    push!(old_vars, var_name)
+    local metastr = something(m[2], "path=$(m[1])$(something(m[3], ""))")
+    local meta = parsemetadata(metastr)
+    if !haskey(meta, :path)
+        meta[:path] = var_name
+    end
+    if haskey(cur.vars, var_name)
+        local var = cur.vars[var_name]
+        var.metadata == meta && return (var_name => name,)
+        # metadata changed
+        if var.metadata[:path] != meta[:path]
+            var.path = parsepath(meta[:path])
+        end
+        var.metadata = meta
+    else
+        local var = Var(con.env, var_name; id=NO_ID, parent=cur.root.id, fullname=name)
+        var.metadata = meta
+        var.path = parsepath(meta[:path])
+        verbose(2, con, "MADE NEW VAR $var_name($(var.id))")
+        cur.vars[var.name] = var
+    end
+    return (var_name => name,)
 end
 
 function handle_incoming_block(
@@ -218,8 +230,7 @@ function base_handle_monitor(con::Connection, name::Symbol, mon::JSON3.Object)
         end
         local new, root, cur = monitor_from(con, name, mon)
         local val = mon.value
-        local new_data_keys = find_monitor_vars(con, new, name, cur, mon)
-
+        local rename, new_data_keys = find_monitor_vars(con, new, name, cur, mon)
         cur.rootpath = mon.root
         cur.data = JSON3.read(JSON3.write(val), Dict{Symbol, Any})
         cur.data_keys = new_data_keys
@@ -236,9 +247,9 @@ function base_handle_monitor(con::Connection, name::Symbol, mon::JSON3.Object)
                 end
             else
             end
-        elseif !isempty(new_data_keys) && !cur.disabled
+        elseif !cur.disabled && !(isempty(new_data_keys) && isempty(rename))
             # remove monitor variable changes from env so they don't get sent out
-            for (jsym, vfullname) in new_data_keys
+            for (jsym, vfullname) in Iterators.flatten((new_data_keys, rename))
                 json = get(cur.data, jsym, nothing)
                 var = con.env.varfullnames[vfullname]
                 if !is_same(json, var.json_value)
@@ -287,9 +298,11 @@ function safe_set(con::Connection, mon::MonitorData, var::Var, value)
         set_value(con.env, var, deref(con.env, value))
     catch err
         check_sigint(err)
-        @error "Error setting value in monitor $(mon.name) for variable $(var.name)" exception = (
-            err, catch_backtrace()
-        )
+        if !(err isa VarException && err.type == :path && con.verbosity < 2)
+            @error "Error setting value in monitor $(mon.name) for variable $(var.name)" exception = (
+                err, catch_backtrace()
+            )
+        end
     end
 end
 

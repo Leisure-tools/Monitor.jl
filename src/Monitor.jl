@@ -52,11 +52,13 @@ Monitor.jl supports 4 types of blocks with some of these common properties:
 Block types:  
 
 * Monitor blocks -- monitor Julia values  
-  * **`type:`** "monitor"
-  * **`topics:`** controls which program(s) install the monitor
-  * **`targets:`** controls which program(s) install the monitor
-  * **`updateTopics:`** specifies the topics to publish this monitor to when it changes
-      A UI sending a monitor with this property should automatically subscribe to the topics.  
+  * **`type:`** "monitor"  
+  * **`rename`** rename this monitor to the variable's value before publishing
+  * **`topics:`** controls which program(s) install the monitor  
+  * **`targets:`** controls which program(s) install the monitor  
+  * **`updateTopics:`** specifies the topics to publish this monitor to when it changes  
+      A UI sending a monitor with this property should automatically subscribe to the topics  
+      unless the topics are reduce topics, in which case only the reduction peers should subscribe  
   * **`updateTargets:`** controls which programs receive updates  
   * **`tags:`** identifyies a set of blocks. Can be a string or an array of strings  
   * **`root:`** root value for the variables  
@@ -95,7 +97,7 @@ Block types:
 # API:
 
 ```julia
-start(con::Connection; roots::Dict{Symbol,Any}=Dict(), verbosity=0)
+start(con::Connection; roots::Dict{Symbol,Any}=Dict(), verbosity=0, init_func=Monitor.init)
 
 send(data) -- queue an update to send out
 
@@ -127,25 +129,25 @@ Optional handlers:
 init(::Connection)
 
 # returns the time to wait between refreshes
-incoming_update_period(::Connection)
+incoming_update_period(con::Connection{T}, data::T)
 
 # returns the time to wait before sending out pending publishes
-outgoing_update_period(::Connection)
+outgoing_update_period(con::Connection{T}, data::T)
 
 # returns whether there are pending updates
-has_updates(::Connection, ::UpdateType)
+has_updates(con::Connection{T}, data::T, ::UpdateType)
 
 # Receive a monitor block, by default just calls base_handle_monitor(con, name, mon)
-handle_monitor(con::Connection, name::Symbol, mon::JSON3.Object) =
+handle_monitor(con::Connection{T}, data::T, name::Symbol, mon::JSON3.Object) =
 
 # Receive an code block, by default just calls base_handle_code(con, name, ev)
-handle_code(con::Connection, name::Symbol, ev::JSON3.Object)
+handle_code(con::Connection{T}, data::T, name::Symbol, ev::JSON3.Object)
 
 # Receive a data block, by default just calls base_handle_data(con, name, data)
-handle_data(con::Connection, name::Symbol, data::JSON3.Object) =
+handle_data(con::Connection{T}, data::T, name::Symbol, data::JSON3.Object) =
 
 # Delete data blocks, by default just calls base_handle_delete(con, data)
-handle_delete(con::Connection, del::JSON3.Object) =
+handle_delete(con::Connection{T}, data::T, del::JSON3.Object) =
 ```
 """
 module Monitor
@@ -159,9 +161,16 @@ using Dates
 const astr = AbstractString
 const MONITOR_KEYS = Set((:root, :update, :quiet, :updatetopics))
 
+# hooks
+function incoming_update_period end
+function get_updates end
+function send_updates end
+function init end
+
 include("types.jl")
 include("vars.jl")
 include("update.jl")
+include("reducer.jl")
 
 verbosity(env::VarEnv{Connection}) = env.data.verbosity
 
@@ -179,7 +188,9 @@ end
 check_sigint(err) = err isa InterruptException && exit(1)
 
 "Initialize a new connection right after it is created"
-init(::Connection) = nothing
+init(con::Connection) = init(con, con.data)
+
+init(::Connection, _) = nothing
 
 """
 Creat a connection and start it by default
@@ -189,19 +200,10 @@ The `spawn` keyword can be
 - `false`: immediately use this thread to run the connection -- does not return until closed
 - `nothing`: do not run the connection. The caller will arrange to run it
 """
-start(
-    name::String,
-    data::T;
-    roots::Dict{Symbol}=Dict{Symbol}(),
-    spawn::Union{Bool, Nothing}=true,
-    verbosity=0,
-    use_accounting=false,
-) where {T} = start(identity, name, data; roots, spawn, verbosity, use_accounting)
-
 function start(
-    init_func::Function,
     name::String,
     data::T;
+    init_func::Function=init,
     roots::Dict{Symbol}=Dict{Symbol}(),
     spawn::Union{Bool, Nothing}=true,
     verbosity=0,
@@ -209,10 +211,7 @@ function start(
 ) where {T}
     con = Connection(name, data; verbosity, use_accounting)
     con.env.roots = roots
-    init(con)
-    @info "RUNNING INIT FUNCTION: $(typeof(init_func))"
-    !isnothing(init_func) &&
-        init_func(con)
+    init_func(con)
     run_accounting(con)
     with(current_connection => con) do
         # put incoming updates into con.incoming_blocks
@@ -428,11 +427,22 @@ function run_connection(
 end
 
 #incoming_update_period(::Connection) = 60.0 * 2
-incoming_update_period(::Connection) = 2
+"Hook"
+incoming_update_period(con::Connection) =
+    incoming_update_period(con, con.data)
+
+incoming_update_period(con::Connection, _) = 2
+
+"Base hook that delegates to the monitor's data"
+function get_updates(con::Connection, wait_period::Float64)
+    get_updates(
+        con, con.data, wait_period::Float64
+    )::Union{Nothing, OrderedDict{Symbol, JSON3.Object}}
+end
 
 "Hook: retrieve current updates"
 function get_updates(
-    ::Connection, wait_period::Float64
+    ::Connection, _, wait_period::Float64
 )::Union{Nothing, OrderedDict{Symbol, JSON3.Object}}
     error("UNDEFINED HOOK: get_updates")
 end
@@ -461,7 +471,7 @@ function process_incoming_update(con::Connection)
         con.stats.incoming_update_attempts += 1
         verbose(2, con, "GETTING UPDATES")
         local updates = get_updates(
-            con, incoming_update_period(con)
+            con, incoming_update_period(con, con.data)
         )::Union{OrderedDict{Symbol, JSON3.Object}, Nothing}
         if has_updates(con, updates)
             con.stats.incoming_updates += 1
@@ -581,8 +591,13 @@ function shutdown(con::Connection)
     close(con.com_channel)
 end
 
+"Base hook that delegates to data"
+function send_updates(con::Connection, updates::OrderedDict)
+    send_updates(con, con.data, updates)
+end
+
 "HOOK"
-function send_updates(::Connection, ::OrderedDict)
+function send_updates(::Connection, _, ::OrderedDict)
     error("UNDEFINED HOOK: send_updates")
 end
 

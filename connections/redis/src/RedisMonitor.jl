@@ -48,17 +48,17 @@ function RedisCon(;
     )
 end
 
-function listen(con::Connection{RedisCon}, stream::AbstractString)
-    con.data.input_streams[stream] = "0"
+function listen(con::Connection, data::RedisCon, stream::AbstractString)
+    data.input_streams[stream] = "0"
 end
 
-function stop_listening(con::Connection{RedisCon}, stream::AbstractString)
-    delete!(con.data.input_streams, stream)
+function stop_listening(con::Connection, data::RedisCon, stream::AbstractString)
+    delete!(data.input_streams, stream)
 end
 
-Monitor.incoming_update_period(::Connection{RedisCon}) = 5.0
+Monitor.incoming_update_period(::Connection, data::RedisCon) = 5.0
 
-function require_control(con::Connection{RedisCon}, has=true)
+function require_control(con::Connection, data::RedisCon, has=true)
     (current_connection[] == con) != has &&
         error("Connection $(has ? "not" : "should not be") in control of task: ", con.name)
 end
@@ -68,8 +68,8 @@ function require_control(chan::Channel, has=true)
         error("Runner $(has ? "not" : "should not be") in control of task: ", con.name)
 end
 
-function all_topics(con::Connection{RedisCon})
-    require_control(con)
+function all_topics(con::Connection, data::RedisCon)
+    require_control(con, data)
     return Set(
         topic
         for (_, mon) in con.monitors
@@ -77,44 +77,44 @@ function all_topics(con::Connection{RedisCon})
     )
 end
 
-function has_topic(con::Connection{RedisCon}, block, topic)
+function has_topic(con::Connection, data::RedisCon, block, topic)
     if topic == ""
-        topic = con.data.output_stream
+        topic = data.output_stream
     end
     #@info "CHECKING BLOCK" block
     btop = get(block, :topics, nothing)
     if isnothing(btop) || btop == ""
-        return topic == con.data.output_stream
+        return topic == data.output_stream
     elseif btop isa String
         return btop == topic
     end
     return topic ∈ btop
 end
 
-function check_topics(con::Connection{RedisCon}; update=true)
+function check_topics(con::Connection, data::RedisCon; update=true)
     async(con, con.com_channel) do
-        topics = all_topics(con)
-        async(con, con.data) do
-            if topics != con.data.last_topics
-                prefix = con.data.original_input_streams[1]
-                verbose(con, "TOPICS CHANGED FROM ", con.data.last_topics, " TO ", topics)
-                con.data.last_topics = topics # track by topic name (without "MONITOR-" prefix)
+        topics = all_topics(con, data)
+        async(con, data) do
+            if topics != data.last_topics
+                prefix = data.original_input_streams[1]
+                verbose(con, "TOPICS CHANGED FROM ", data.last_topics, " TO ", topics)
+                data.last_topics = topics # track by topic name (without "MONITOR-" prefix)
                 streams = Set("$prefix-$topic" for topic in topics)
-                old = setdiff(keys(con.data.input_streams), con.data.original_input_streams)
+                old = setdiff(keys(data.input_streams), data.original_input_streams)
                 setdiff!(old, streams)
                 !isempty(old) &&
                     verbose(con, "ABANDONING STREAMS: $(join(old, " "))")
                 for topic in old
-                    delete!(con.data.input_streams, topic)
+                    delete!(data.input_streams, topic)
                 end
-                setdiff!(streams, keys(con.data.input_streams))
+                setdiff!(streams, keys(data.input_streams))
                 !isempty(streams) &&
                     verbose(con, "ADDING STREAMS: $(join(streams, " "))")
                 for stream in streams
-                    con.data.input_streams[stream] = "0"
+                    data.input_streams[stream] = "0"
                 end
                 # invalidate the current watch and start another
-                con.data.watch_count += 1
+                data.watch_count += 1
                 update &&
                     spawn() do
                         process_incoming_update(con)
@@ -124,15 +124,16 @@ function check_topics(con::Connection{RedisCon}; update=true)
     end
 end
 
+"HOOK"
 # note if we need to group by stream, we can override handle_updates
-function Monitor.get_updates(con::Connection{RedisCon}, timeout::Float64)
-    async(con, con.data) do
-        topics = con.data.last_topics
-        count = con.data.watch_count
+function Monitor.get_updates(con::Connection, data::RedisCon, timeout::Float64)
+    async(con, data) do
+        topics = data.last_topics
+        count = data.watch_count
         spawn() do
             strs = []
             ids = []
-            for (str, id) in con.data.input_streams
+            for (str, id) in data.input_streams
                 push!(strs, str)
                 push!(ids, id)
             end
@@ -147,37 +148,39 @@ function Monitor.get_updates(con::Connection{RedisCon}, timeout::Float64)
             errs = 0
             while isnothing(updates) && time() - t < timeout
                 try
-                    updates = xread(con.data.redis, con.data.input_streams; block=0.002)
+                    updates = xread(data.redis, data.input_streams; block=0.002)
                     errs = 0
                 catch err
-                    errs += 1
-                    if errs > 3
-                        @error "$errs ERRORS IN A ROW DURING XREAD"
-                        exit(1)
+                    if !(err isa EOFError)
+                        errs += 1
+                        if errs > 3
+                            @error "$errs ERRORS IN A ROW DURING XREAD"
+                            exit(1)
+                        end
                     end
                 end
                 sleep(0.1)
             end
-            if count != con.data.watch_count || isnothing(updates)
+            if count != data.watch_count || isnothing(updates)
                 # if watch_count has changed, discard the results, do not update the stream counters, etc.
-                count != con.data.watch_count &&
+                count != data.watch_count &&
                     @info "DISCARDING DATA BECAUSE WATCH_COUNT INCREASED" updates
-                put!(con.data.output_channel, nothing)
+                put!(data.output_channel, nothing)
             else
                 #@info "HANDLING DATA" updates
-                put!(con.data.output_channel, handle_updates(con, updates))
+                put!(data.output_channel, handle_updates(con, data, updates))
             end
         end
     end
     try
-        return take!(con.data.output_channel)
+        return take!(data.output_channel)
     catch err
         @error "ERROR GETTING REDIS DATA" exception = (err, catch_backtrace())
         return nothing
     end
 end
 
-function handle_updates(con::Connection{RedisCon}, updates)
+function handle_updates(con::Connection, data::RedisCon, updates)
     (updates isa AbstractString || isnothing(updates)) &&
         return nothing
     local dict = OrderedDict{Symbol, JSON3.Object}()
@@ -187,7 +190,7 @@ function handle_updates(con::Connection{RedisCon}, updates)
         isnothing(result) &&
             continue
         for (id, update) in result
-            #con.data.input_streams[stream] = id
+            #data.input_streams[stream] = id
             streams[stream] = id
             if length(update) != 4
                 error(
@@ -200,7 +203,7 @@ function handle_updates(con::Connection{RedisCon}, updates)
                     """Illegal stream format, items must be "batch", [{name:block...}...], "sender", ID"""
                 )
             end
-            info["sender"] == con.data.peerid &&
+            info["sender"] == data.peerid &&
                 continue
             if info["batch"] != "null"
                 local batch = try
@@ -211,7 +214,7 @@ function handle_updates(con::Connection{RedisCon}, updates)
                 for item in batch
                     if haskey(item, :target)
                         t = item.target
-                        id = con.data.peerid
+                        id = data.peerid
                         t != id && !(t isa Vector && id ∈ t) &&
                             continue
                     end
@@ -220,25 +223,30 @@ function handle_updates(con::Connection{RedisCon}, updates)
             end
         end
     end
-    async(con, con.data) do
-        merge!(con.data.input_streams, streams)
+    async(con, data) do
+        merge!(data.input_streams, streams)
     end
-    check_topics(con)
+    check_topics(con, data)
     return dict
 end
 
-function Monitor.send_updates(con::Connection{RedisCon}, outgoing::OrderedDict)
+"HOOK"
+function Monitor.send_updates(con::Connection, data::RedisCon, outgoing::OrderedDict)
     isempty(outgoing) &&
         verbose(2, con, "NO UPDATE TO SEND")
     isempty(outgoing) &&
         return nothing
-    check_topics(con)
+    check_topics(con, data)
     verbose(2, con, "SENDING UPDATE")
-    output = con.data.output_stream
+    output = data.output_stream
     topics = Set(
         str
         for (name, data) in outgoing
-        for str in Monitor.prop_list(data, :topics, [con.data.output_stream])
+        for tl in (
+            Monitor.prop_list(data, :topics, [output]),
+            Monitor.prop_list(data, :updatetopics, [output]),
+        )
+        for str in Monitor.prop_list(data, :topics, [output])
     )
     verbose(2, con, "SENDING UPDATES: ", topics)
     for (name, value) in outgoing
@@ -250,25 +258,30 @@ function Monitor.send_updates(con::Connection{RedisCon}, outgoing::OrderedDict)
         blocks = [
             block
             for (name, block) in outgoing
-            if has_topic(con, block, topic)
+            if has_topic(con, data, block, topic)
         ]
         if !isempty(blocks)
             if topic == ""
-                topic = con.data.output_stream
-            elseif topic != con.data.output_stream
-                topic = "$(con.data.output_stream)-$topic"
+                topic = output
+            elseif topic != output
+                topic = "$output-$topic"
                 verbose(2, con, "SENDING ON $topic: ", blocks)
             end
             spawn() do
-                xadd(
-                    con.data.redis,
-                    topic,
-                    "*",
-                    "batch",
-                    JSON3.write(blocks),
-                    "sender",
-                    con.data.peerid,
-                )
+                try
+                    xadd(
+                        data.redis,
+                        topic,
+                        "*",
+                        "batch",
+                        JSON3.write(blocks),
+                        "sender",
+                        data.peerid,
+                    )
+                catch err
+                    !(err isa EOFError) &&
+                        rethrow()
+                end
             end
         end
     end
@@ -280,22 +293,22 @@ Monitor.sync(f::Function, con::Connection, rcon::RedisCon) =
 Monitor.async(f::Function, con::Connection, rcon::RedisCon; wrap::Symbol=:die) =
     Monitor.async(f, con, rcon.service; wrap)
 
-function init(con::Connection{RedisCon})
+function Monitor.init(con::Connection, data::RedisCon)
     @info "SPAWNING REDIS CONNECTION"
     spawn() do
         try
             @info "STARTING REDIS CONNECTION"
-            Monitor.run_connection("REDIS", con, con.data.service)
+            Monitor.run_connection("REDIS", con, data.service)
         catch err
             @error "Error running connection" exception = (err, catch_backtrace())
         end
     end
-    check_topics(con; update=false)
+    check_topics(con, data; update=false)
 end
 
 function start(name::String, output_stream::String, first_input_stream::String=output_stream,
     more_inputs::String...
-    ; verbosity=0, roots=Dict{Symbol, Any}())
+    ; verbosity=0, roots=Dict{Symbol, Any}(), init_func=Monitor.init)
     rcon = RedisCon(;
         redis=Redis.RedisConnection(),
         output_stream="$MONITOR_PREFIX$output_stream",
@@ -304,7 +317,7 @@ function start(name::String, output_stream::String, first_input_stream::String=o
         ),
     )
     @info "STARTING MONITOR"
-    Monitor.start(init, name, rcon; roots, verbosity)
+    Monitor.start(name, rcon; roots, verbosity, init_func)
 end
 
 end

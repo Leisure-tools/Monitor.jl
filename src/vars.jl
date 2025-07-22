@@ -383,7 +383,7 @@ set_value(ctx::VarCtx, value; creating=false) =
 function basic_set_value(ctx::VarCtx, value; creating=false)
     local env = ctx.env
     local var = ctx.var
-    exc(type, msg, err=NoCause) = throw(VarException(type, ctx, msg, err))
+    exc(type, msg, err=NoCause()) = throw(VarException(type, ctx, msg, err))
     creating &&
         (haskey(var.metadata, :create) || var.action || !isempty(var.path)) &&
         return nothing

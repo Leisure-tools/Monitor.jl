@@ -95,6 +95,7 @@ end
     name::Symbol
     root::Var
     rootpath::String
+    rename::Union{Nothing, Var} = nothing
     update::Float64
     quiet::Bool = false
     topics::Vector{String} = String[]
