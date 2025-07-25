@@ -146,6 +146,7 @@ mutable struct Connection{DataType}
     account::Set{Channel}
     update_input::Channel{Function}
     update_output::Channel{Function}
+    peerid::String
     Connection(::Type{T}) where {T} = new{T}()
 end
 
@@ -166,9 +167,16 @@ function Connection(
     data_blocks::Dict{Symbol, Any}=Dict{Symbol, Any}(),
     incoming_blocks::OrderedDict{Symbol, Any}=OrderedDict{Symbol, Any}(),
     use_accounting::Bool=false,
+    peerid::String=string(uuid4()),
+    prefix_name::Bool=false,
 ) where {T}
     local con = Connection(T)
-    con.name = name
+    con.peerid = peerid
+    con.name = if prefix_name
+        name * peerid
+    else
+        name
+    end
     con.data = data
     con.com_channel = channel
     con.refresh_channel = refresh_channel

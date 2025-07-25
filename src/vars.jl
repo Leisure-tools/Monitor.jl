@@ -420,6 +420,22 @@ function basic_set_value(ctx::VarCtx, value; creating=false)
         end
     elseif cur === nothing
         exc(:path, ctx, "error setting field $(el) in path $(var.path) for $var")
+    elseif el isa Symbol && dicty(cur)
+        current = get(cur, el, nothing)
+        val = value
+        if !isnothing(current) && !(val isa typeof(current))
+            val = try
+                StructTypes.constructfrom(typeof(current), val)
+            catch err
+                check_sigint(err)
+                exc(
+                    :path,
+                    "error setting field $(el) in path $(var.path) for $var: could not convert value <$(value)> to type $(typeof(current))",
+                    err,
+                )
+            end
+        end
+        cur[el] = val
     elseif el isa Symbol
         try
             local ft = fieldtype(typeof(cur), el)

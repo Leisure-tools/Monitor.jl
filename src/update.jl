@@ -18,9 +18,11 @@ function prop_list(obj::JSON3.Object, key::Symbol, default::Vector{T}) where {T}
     v = get(obj, key, nothing)
     isnothing(v) &&
         return default
-    v isa Vector{T} &&
+    v isa Vector && isempty(v) &&
+        return default
+    v isa JSON3.Array{T} &&
         return v
-    if v isa Vector
+    if v isa JSON3.Array
         T == String &&
             return string.(v)
         return T[convert(T, item) for item in v]
@@ -113,6 +115,8 @@ function find_monitor_vars(
         rename = get(mon, :rename, nothing)
         if !isnothing(rename)
             rename_result = find_monitor_var(con, cur, name, rename, old_vars)
+            ((varname,),) = rename_result
+            cur.rename = cur.vars[varname]
         end
         for (ksym, _) in val
             pair = find_monitor_var(con, cur, name, string(ksym), old_vars)[1]
@@ -166,6 +170,7 @@ end
 
 function handle_incoming_block(
     con::Connection,
+    _,
     name::Symbol,
     update::JSON3.Object,
     updated::Set{Symbol},
@@ -282,7 +287,7 @@ function base_handle_code(con::Connection, name::Symbol, ev::JSON3.Object)
         @error "Bad value type for code, expecting string but got: $(typeof(str))"
         return nothing
     end
-    if !isempty(str)
+    return if !isempty(str)
         try
             Main.eval(Meta.parse("begin " * str * " end"))
         catch err
@@ -410,10 +415,17 @@ function compute_data(con::Connection, mon::MonitorData)
         local var = con.env.varfullnames[fullname]
         mon.data[key] = var.json_value
     end
+    exclude = MONITOR_KEYS
+    if !isnothing(mon.rename)
+        exclude = Set(MONITOR_KEYS)
+        push!(exclude, :rename)
+    end
     # maintain order
     return OrderedDict{Symbol, Any}(
-        (Symbol(k) => v for (k, v) in mon.original if k ∉ MONITOR_KEYS)...,
+        (Symbol(k) => v
+         for (k, v) in mon.original if k ∉ exclude)...,
         :root => mon.rootpath,
+        (!isnothing(mon.rename) ? (:name => mon.rename.json_value,) : ())...,
         (mon.update != con.default_update ? (:update => mon.update,) : ())...,
         (mon.quiet ? (:quiet => mon.quiet,) : (;))...,
         (!isempty(mon.update_topics) ? (:updatetopics => mon.update_topics,) : ())...,

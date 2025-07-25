@@ -97,7 +97,7 @@ Block types:
 # API:
 
 ```julia
-start(con::Connection; roots::Dict{Symbol,Any}=Dict(), verbosity=0, init_func=Monitor.init)
+start(con::Connection, data; roots::Dict{Symbol,Any}=Dict(), verbosity=0, init_func=Monitor.init)
 
 send(data) -- queue an update to send out
 
@@ -108,9 +108,10 @@ current_connection[]::Connection -- get the current connection, useful for addin
 sync(func) -- run a function synchronusly within the monitor thread, returning the result
 
 async(func) -- run a function asynchronously within the monitor thread
+
 ```
 
-ADDING YOUR OWN TRANSPORTS
+CUSTOMIZING AND/OR ADDING YOUR OWN TRANSPORTS
 
 You can make your own transport by implementing two required handlers:
 
@@ -122,32 +123,38 @@ get_updates(con::Connection{T}, wait_time::Float64)
 send_updates(con::Connection{T}, changes::OrderedDict{Symbol})
 ```
 
-Optional handlers:
+Optional handlers. f(con, data) is initially called with the Connection and its data
+but composite data can potentially call f(con, other_data) on the other data it composes.
+Because this supports composite data, these may be called with f(con::Connection{T}, data::U).
+Methods should use concrete types, like f(con::Connection, data::RedisCon)
 
 ```julia
 # initialize a newly created connection
-init(::Connection)
+init(con::Connection, data::T)
+
+# determine if a block targets the current peer
+is_target(con::Connection, data::T, block)
 
 # returns the time to wait between refreshes
-incoming_update_period(con::Connection{T}, data::T)
+incoming_update_period(con::Connection, data::T)
 
 # returns the time to wait before sending out pending publishes
-outgoing_update_period(con::Connection{T}, data::T)
+outgoing_update_period(con::Connection, data::T)
 
 # returns whether there are pending updates
-has_updates(con::Connection{T}, data::T, ::UpdateType)
+has_updates(con::Connection, data::T, ::UpdateType)
 
 # Receive a monitor block, by default just calls base_handle_monitor(con, name, mon)
-handle_monitor(con::Connection{T}, data::T, name::Symbol, mon::JSON3.Object) =
+handle_monitor(con::Connection, data::T, name::Symbol, mon::JSON3.Object) =
 
 # Receive an code block, by default just calls base_handle_code(con, name, ev)
-handle_code(con::Connection{T}, data::T, name::Symbol, ev::JSON3.Object)
+handle_code(con::Connection, data::T, name::Symbol, ev::JSON3.Object)
 
 # Receive a data block, by default just calls base_handle_data(con, name, data)
-handle_data(con::Connection{T}, data::T, name::Symbol, data::JSON3.Object) =
+handle_data(con::Connection, data::T, name::Symbol, data::JSON3.Object) =
 
 # Delete data blocks, by default just calls base_handle_delete(con, data)
-handle_delete(con::Connection{T}, data::T, del::JSON3.Object) =
+handle_delete(con::Connection, data::T, del::JSON3.Object) =
 ```
 """
 module Monitor
@@ -166,6 +173,9 @@ function incoming_update_period end
 function get_updates end
 function send_updates end
 function init end
+function is_target end
+function handle_monitor end
+function handle_code end
 
 include("types.jl")
 include("vars.jl")
@@ -189,8 +199,11 @@ check_sigint(err) = err isa InterruptException && exit(1)
 
 "Initialize a new connection right after it is created"
 init(con::Connection) = init(con, con.data)
-
 init(::Connection, _) = nothing
+
+
+is_target(con::Connection, block::JSON3.Object) = is_target(con, con.data, block)
+is_target(con::Connection, data, block::JSON3.Object) = false
 
 """
 Creat a connection and start it by default
@@ -208,8 +221,9 @@ function start(
     spawn::Union{Bool, Nothing}=true,
     verbosity=0,
     use_accounting=false,
+    prefix_name=false,
 ) where {T}
-    con = Connection(name, data; verbosity, use_accounting)
+    con = Connection(name, data; verbosity, use_accounting, prefix_name)
     con.env.roots = roots
     init_func(con)
     run_accounting(con)
@@ -319,6 +333,7 @@ function sync(f::Function, con::Connection, chan::Channel{Function})
         return f()
     local result = Channel{Any}()
     local exception = nothing
+    local bt = nothing
     local exec_num
 
     async(con, chan; wrap=:none) do
@@ -326,12 +341,16 @@ function sync(f::Function, con::Connection, chan::Channel{Function})
             put!(result, invokelatest(f))
         catch err
             exception = err
+            bt = catch_backtrace()
             put!(result, nothing)
             rethrow()
         end
     end
     local value = take!(result)
-    !isnothing(exception) && throw(exception)
+    if !isnothing(exception)
+        @error "Exception in sync command" exception = (exception, bt)
+        throw(exception)
+    end
     return value
 end
 
@@ -491,6 +510,9 @@ end
 
 has_updates(::Connection, ::Nothing) = false
 has_updates(::Connection, updates) = !isempty(updates)
+
+handle_incoming_block(con::Connection, name::Symbol, update::JSON3.Object, updated::Set{Symbol}) =
+    handle_incoming_block(con, con.data, name, update, updated)
 
 function handle_incoming_blocks(con::Connection, updates::AbstractDict, updated::Set{Symbol})
     updatekeys = sort!([k for k in keys(updates)]; by=string)

@@ -4,7 +4,7 @@ Data is encoded as key-json pairs in each streaming record
 module RedisMonitor
 
 using Monitor: Monitor, Connection, JSON3, verbose, json, sync, async, current_connection,
-    process_incoming_update, current_runner, spawn
+    process_incoming_update, current_runner, spawn, is_target
 using Monitor.UUIDs
 using Base.ScopedValues
 using Redis
@@ -17,7 +17,6 @@ include("cmds.jl")
 
 mutable struct RedisCon
     redis::Redis.RedisConnection
-    peerid::String
     original_input_streams::Vector{String}
     input_streams::Dict{String, String}
     output_stream::String
@@ -29,13 +28,11 @@ end
 
 function RedisCon(;
     redis=Redis.RedisConnection,
-    peerid=string(uuid4()),
     output_stream::String,
     input_streams::Vector{String}=[output_stream],
 )
     RedisCon(
         redis,
-        peerid,
         ["$MONITOR_PREFIX$s" for s in input_streams],
         Dict(
             "$MONITOR_PREFIX$s" => "0" for s in input_streams
@@ -47,6 +44,9 @@ function RedisCon(;
         Channel{Function}(10),
     )
 end
+
+Monitor.is_target(con::Connection, data::RedisCon, block::JSON3.Object) =
+    get(block, :target, nothing) == data.peerid
 
 function listen(con::Connection, data::RedisCon, stream::AbstractString)
     data.input_streams[stream] = "0"
@@ -77,19 +77,19 @@ function all_topics(con::Connection, data::RedisCon)
     )
 end
 
-function has_topic(con::Connection, data::RedisCon, block, topic)
+empty_nothing(topic) =
     if topic == ""
-        topic = data.output_stream
+        nothing
+    else
+        topic
     end
-    #@info "CHECKING BLOCK" block
-    btop = get(block, :topics, nothing)
-    if isnothing(btop) || btop == ""
-        return topic == data.output_stream
-    elseif btop isa String
-        return btop == topic
+
+actual_topic(data::RedisCon, topic) =
+    if isnothing(empty_nothing(topic))
+        data.output_stream
+    else
+        topic
     end
-    return topic ∈ btop
-end
 
 function check_topics(con::Connection, data::RedisCon; update=true)
     async(con, con.com_channel) do
@@ -203,7 +203,7 @@ function handle_updates(con::Connection, data::RedisCon, updates)
                     """Illegal stream format, items must be "batch", [{name:block...}...], "sender", ID"""
                 )
             end
-            info["sender"] == data.peerid &&
+            info["sender"] == con.peerid &&
                 continue
             if info["batch"] != "null"
                 local batch = try
@@ -214,7 +214,7 @@ function handle_updates(con::Connection, data::RedisCon, updates)
                 for item in batch
                     if haskey(item, :target)
                         t = item.target
-                        id = data.peerid
+                        id = con.peerid
                         t != id && !(t isa Vector && id ∈ t) &&
                             continue
                     end
@@ -230,6 +230,24 @@ function handle_updates(con::Connection, data::RedisCon, updates)
     return dict
 end
 
+function has_topic(con::Connection, data::RedisCon, block, topic)
+    topic = actual_topic(data, topic)
+    #@info "CHECKING BLOCK" block
+    #btop = actual_topic(con, get(block, :topics, nothing))
+    btop = empty_nothing(get(block, :topics, nothing))
+    bup = empty_nothing(get(block, :updatetopics, nothing))
+    if isnothing(btop) && isnothing(bup)
+        return topic == data.output_stream
+    elseif bup isa String
+        return bup == topic
+    elseif !isnothing(bup)
+        return topic ∈ bup
+    elseif btop isa String
+        return btop == topic
+    end
+    return topic ∈ btop
+end
+
 "HOOK"
 function Monitor.send_updates(con::Connection, data::RedisCon, outgoing::OrderedDict)
     isempty(outgoing) &&
@@ -241,18 +259,18 @@ function Monitor.send_updates(con::Connection, data::RedisCon, outgoing::Ordered
     output = data.output_stream
     topics = Set(
         str
-        for (name, data) in outgoing
+        for (_, data) in outgoing
         for tl in (
             Monitor.prop_list(data, :topics, [output]),
             Monitor.prop_list(data, :updatetopics, [output]),
         )
-        for str in Monitor.prop_list(data, :topics, [output])
+        for str in tl
     )
-    verbose(2, con, "SENDING UPDATES: ", topics)
+    verbose(1, con, "SENDING UPDATES: ", topics)
     for (name, value) in outgoing
         verbose(2, con, "   ITEM name: ", name, " value: ", value)
     end
-    push!(topics, "")
+    push!(topics, output)
     for topic in topics
         #@info "CHECKING BLOCKS" outgoing
         blocks = [
@@ -276,7 +294,7 @@ function Monitor.send_updates(con::Connection, data::RedisCon, outgoing::Ordered
                         "batch",
                         JSON3.write(blocks),
                         "sender",
-                        data.peerid,
+                        con.peerid,
                     )
                 catch err
                     !(err isa EOFError) &&
